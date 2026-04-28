@@ -1,0 +1,274 @@
+/**
+ * @fileoverview Queue Panel Styles
+ *
+ * Styles for the queue panel that appears when multiple saves are queued.
+ * Matches the floating panel's glassmorphism aesthetic.
+ *
+ * @module queue-panel-css
+ */
+
+/* ==================== PANEL CONTAINER ==================== */
+
+.booru-eagle-queue-panel {
+  position: fixed;
+  top: 80px;
+  right: -280px;
+  width: 200px;
+  max-height: calc(100vh - 160px);
+
+  /* Same frosted glass as floating panel */
+  background: rgba(20, 20, 35, 0.55) !important;
+  backdrop-filter: blur(24px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(160%) !important;
+  border: none !important;
+  border-radius: 12px !important;
+  box-shadow:
+    0 4px 20px rgba(100, 100, 180, 0.15),
+    0 2px 8px rgba(0, 0, 0, 0.2) !important;
+
+  z-index: 2147483646; /* Just below floating panel (2147483647) */
+  transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: rgba(255, 255, 255, 0.8) !important;
+  font-size: 12px;
+}
+
+.booru-eagle-queue-panel.visible {
+  right: 12px;
+}
+
+/* ==================== HEADER ==================== */
+
+.booru-eagle-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: none;
+  user-select: none;
+}
+
+.booru-eagle-queue-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.8);
+  font-family: 'Caveat', 'Dancing Script', 'Pacifico', 'Brush Script MT', 'Segoe Script', cursive, -apple-system, BlinkMacSystemFont, sans-serif;
+  letter-spacing: 0.3px;
+}
+
+.booru-eagle-queue-title .queue-icon {
+  font-size: 12px;
+}
+
+.booru-eagle-queue-count {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.booru-eagle-queue-close {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: none !important;
+  color: rgba(255, 255, 255, 0.55) !important;
+  cursor: pointer;
+  font-size: 10px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.booru-eagle-queue-close:hover {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+}
+
+/* ==================== TASK LIST ==================== */
+
+.booru-eagle-queue-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  gap: 3px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.booru-eagle-queue-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.booru-eagle-queue-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.booru-eagle-queue-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+/* ==================== TASK TILE ==================== */
+
+.booru-eagle-queue-tile {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+  animation: tileSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  min-height: 26px;
+  cursor: default;
+}
+
+@keyframes tileSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.booru-eagle-queue-tile:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Status dot */
+.booru-eagle-queue-tile__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Post ID */
+.booru-eagle-queue-tile__post-id {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 10px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.6);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Status text */
+.booru-eagle-queue-tile__status {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.35);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Progress bar (mini) */
+.booru-eagle-queue-tile__progress {
+  width: 30px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 1px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.booru-eagle-queue-tile__progress-fill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width 0.2s ease;
+}
+
+/* ==================== STATE COLORS ==================== */
+
+/* Waiting (pending_parse, pending_download) */
+.booru-eagle-queue-tile--waiting .booru-eagle-queue-tile__dot {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Downloading */
+.booru-eagle-queue-tile--downloading .booru-eagle-queue-tile__dot {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
+  animation: dotPulse 1.5s ease-in-out infinite;
+}
+
+.booru-eagle-queue-tile--downloading .booru-eagle-queue-tile__progress-fill {
+  background: #4ade80;
+}
+
+.booru-eagle-queue-tile--downloading .booru-eagle-queue-tile__status {
+  color: #4ade80;
+}
+
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Saving to Eagle */
+.booru-eagle-queue-tile--saving .booru-eagle-queue-tile__dot {
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
+}
+
+.booru-eagle-queue-tile--saving .booru-eagle-queue-tile__status {
+  color: #fbbf24;
+}
+
+/* Completed */
+.booru-eagle-queue-tile--completed .booru-eagle-queue-tile__dot {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.3);
+}
+
+.booru-eagle-queue-tile--completed .booru-eagle-queue-tile__status {
+  color: #4ade80;
+}
+
+/* Failed */
+.booru-eagle-queue-tile--failed .booru-eagle-queue-tile__dot {
+  background: #f87171;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.4);
+}
+
+.booru-eagle-queue-tile--failed .booru-eagle-queue-tile__status {
+  color: #f87171;
+}
+
+/* Collapsed count */
+.booru-eagle-queue-tile--collapsed {
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.03);
+  min-height: 22px;
+}
+
+.booru-eagle-queue-tile--collapsed .booru-eagle-queue-tile__post-id {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 9px;
+  flex: none;
+}
+
+/* ==================== HIDDEN STATE ==================== */
+
+.booru-eagle-queue-panel.hidden-by-user {
+  right: -280px !important;
+  pointer-events: none;
+}
