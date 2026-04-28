@@ -11,6 +11,13 @@ A Chromium browser extension that helps save images from Booru directly to Eagle
 - **Sankaku Complex** (chan.sankakucomplex fork)
 - **yande.re**
 
+## Screenshots
+
+
+| <img width="282" height="201" alt="brave_hb2kDoKPk5" src="https://github.com/user-attachments/assets/4b10f207-58a6-479c-9941-c9e4a0856348" /> | <img width="415" height="970" alt="Eagle_pHhopRJ09R" src="https://github.com/user-attachments/assets/c229cf62-a87b-4104-863f-f0e47a74dea5" /> |
+| :---: | :---: |
+| _Panel_ | _Eagle-side ss_ |
+
 ## Installation
 
 ### Step 1: Install Eagle App
