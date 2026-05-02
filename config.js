@@ -69,6 +69,35 @@ const SANKAKU_SELECTORS = {
 };
 
 /**
+ * Rule34-specific configuration for handling rate limiting and CAPTCHA
+ * @constant {Object}
+ */
+const RULE34_CONFIG = {
+  /** Minimum delay (ms) between requests to rule34.xxx to avoid 429 */
+  MIN_REQUEST_INTERVAL: 800,
+  /** Delay (ms) before retrying after 429 */
+  RETRY_DELAY_429: 3000,
+  /** Delay (ms) before retrying after CAPTCHA */
+  RETRY_DELAY_CAPTCHA: 5000,
+  /** Maximum number of retry attempts for blocked pages */
+  MAX_RETRIES: 5,
+  /** Page ready check interval (ms) */
+  PAGE_CHECK_INTERVAL: 1000,
+  /** Maximum time to wait for page to become ready (ms) */
+  PAGE_WAIT_TIMEOUT: 120000,
+  
+  /** Title text for 429 rate limiting page */
+  TITLE_429: '429 Rate limiting',
+  /** Title text for Cloudflare CAPTCHA page */
+  TITLE_CAPTCHA: 'Один момент',
+  
+  /** Selector for Cloudflare Turnstile widget */
+  CAPTCHA_SELECTOR: '#cf-chl-widget',
+  /** Selector for CAPTCHA success state */
+  CAPTCHA_SUCCESS_SELECTOR: '[data-cf-turnstile-response]'
+};
+
+/**
  * Extension metadata
  * @constant {Object}
  */
@@ -80,5 +109,5 @@ const EXTENSION_META = {
 
 // Export for use in other modules
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { EAGLE_CONFIG, TIMEOUTS, SANKAKU_SELECTORS, EXTENSION_META };
+  module.exports = { EAGLE_CONFIG, TIMEOUTS, SANKAKU_SELECTORS, RULE34_CONFIG, EXTENSION_META };
 }

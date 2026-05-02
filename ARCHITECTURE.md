@@ -3,14 +3,14 @@
 > This document describes the architecture of Booru to Eagle Saver extension.
 > It is designed to help AI assistants understand and maintain the codebase.
 >
-> **Last updated:** April 2026
+> **Last updated:** May 2026
 
 ## Project Structure
 
 ```
 extension/
 ├── manifest.json              # Chrome extension manifest (entry point config)
-├── config.js                  # Centralized configuration (endpoints, timeouts, selectors)
+├── config.js                  # Centralized configuration (endpoints, timeouts, selectors, RULE34_CONFIG)
 ├── ARCHITECTURE.md            # This file
 ├── README.md                  # User-facing documentation
 │
@@ -21,7 +21,7 @@ extension/
 │   │   ├── danbooru-parser.js # Danbooru-specific parser
 │   │   ├── gelbooru-parser.js # Gelbooru-specific parser
 │   │   ├── konachan-parser.js # Konachan-specific parser
-│   │   ├── rule34-parser.js   # Rule34.xxx-specific parser
+│   │   ├── rule34-parser.js   # Rule34.xxx-specific parser (includes blocker detection)
 │   │   ├── sankaku-parser.js  # Sankaku Complex-specific parser
 │   │   └── yandere-parser.js  # yande.re-specific parser
 │   ├── site-configs.js        # Site configurations for thumbnail buttons
@@ -30,11 +30,12 @@ extension/
 │   ├── panel.js               # Floating UI panel class (BooruEaglePanel)
 │   ├── panel.css              # Panel styles (glassmorphism)
 │   ├── queue-panel.js         # Queue display panel class (BooruEagleQueuePanel)
+│   ├── micro-fixes.js         # Site-specific visual fixes (e.g., fixing overlays)
 │   ├── queue-panel.css        # Queue panel styles
 │   └── main.js                # Entry point for content scripts
 │
 ├── background/                # Background service worker
-│   └── service-worker.js      # Download queue, Eagle API calls, messaging, hidden tab saves
+│   └── service-worker.js      # Download queue, Eagle API calls, messaging, hidden tab saves, RateLimiter
 │
 ├── popup/                     # Extension popup UI
 │   ├── popup.html             # Popup HTML
@@ -50,7 +51,7 @@ extension/
 
 Content scripts are loaded in this order (see manifest.json):
 
-1. **config.js** - Defines global constants (EAGLE_CONFIG, TIMEOUTS, SANKAKU_SELECTORS)
+1. **config.js** - Defines global constants (EAGLE_CONFIG, TIMEOUTS, SANKAKU_SELECTORS, RULE34_CONFIG)
 2. **content/site-configs.js** - Site configurations for thumbnail buttons
 3. **content/thumb-button-config.js** - Centralized button styles
 4. **content/parsers/base-parser.js** - Defines BaseParser class (interface)
@@ -63,14 +64,25 @@ Content scripts are loaded in this order (see manifest.json):
 11. **content/parsers/parser-registry.js** - Registry that ties all parsers together
 12. **content/panel.js** - Defines BooruEaglePanel class (UI)
 13. **content/queue-panel.js** - Defines BooruEagleQueuePanel class
-14. **content/main-page-buttons.js** - Defines MainPageButtons class (thumbnail buttons)
-15. **content/main.js** - Entry point, initializes everything
+14. **content/micro-fixes.js** - Site-specific visual fixes
+15. **content/main-page-buttons.js** - Defines MainPageButtons class (thumbnail buttons)
+16. **content/main.js** - Entry point, initializes everything
 
 ## Module Responsibilities
 
 ### config.js
 **Purpose:** Centralized configuration
-**Key exports:** `EAGLE_CONFIG`, `TIMEOUTS`, `SANKAKU_SELECTORS`
+**Key exports:** `EAGLE_CONFIG`, `TIMEOUTS`, `SANKAKU_SELECTORS`, `RULE34_CONFIG`
+
+`RULE34_CONFIG` contains:
+- `MIN_REQUEST_INTERVAL` (800ms) — Minimum delay between rule34 requests
+- `RETRY_DELAY_429` (3000ms) — Delay before retry after 429
+- `RETRY_DELAY_CAPTCHA` (5000ms) — Delay before retry after CAPTCHA
+- `MAX_RETRIES` (5) — Maximum retry attempts for blocked pages
+- `PAGE_CHECK_INTERVAL` (1000ms) — How often to check if page is ready
+- `PAGE_WAIT_TIMEOUT` (120000ms) — Max time to wait for page readiness
+- `TITLE_429`, `TITLE_CAPTCHA` — Page title strings for detection
+- `CAPTCHA_SELECTOR`, `CAPTCHA_SUCCESS_SELECTOR` — Selectors for Turnstile
 
 ### content/site-configs.js
 **Purpose:** Site configurations for thumbnail save buttons
@@ -156,7 +168,12 @@ Each site parser:
 
 **SankakuParser** has a static `waitForElement(selector, timeout)` method for waiting dynamic content.
 
-**Rule34Parser** overrides `parse()` as `async` to parse image notes from raw HTML. It adds `getNotes()` which fetches the post page HTML via `fetch()` and extracts notes from `<div class="note-body" id="note-body-{id}">text</div>` elements (textContent, not data attributes). Coordinates are extracted from corresponding `<div class="note-box" style="top:Ypx; left:Xpx; ...">` style attributes. HTML entities are decoded (`&#039;`, `<br />`, etc.). `_formatNotesForEagle()` formats notes as plain text with numbered separators.
+**Rule34Parser** additionally includes static methods for blocked page detection:
+- `isRateLimited()` — Check if current page is a 429 rate limiting page
+- `isCaptchaPage()` — Check if current page is a Cloudflare CAPTCHA challenge
+- `getBlockerType()` — Returns `'rate_limit' | 'captcha' | null`
+- `isCaptchaSolved()` — Check if CAPTCHA has been solved
+- `waitForPageReady(timeout)` — Wait for a blocked page to resolve
 
 **Important:** All parsers must apply `[...new Set(tags)]` deduplication in `getRawTags()`. DanbooruParser and Rule34Parser use `this.normalizeTags()` from BaseParser (no override).
 
@@ -242,10 +259,11 @@ Each site parser:
 3. Create BooruEaglePanel
 4. Create BooruEagleQueuePanel
 5. Initialize MainPageButtons (for main/search pages)
-6. Parse page data using the detected parser
-7. Update panel with data
-8. Listen for save events
-9. Send save request to background
+6. **Rule34 blocked page detection** — check for 429 or CAPTCHA before parsing
+7. Parse page data using the detected parser
+8. Update panel with data
+9. Listen for save events
+10. Send save request to background
 
 **Sankaku Quick Parse:**
 - On Sankaku, `ensureParsedData` tries an **immediate parse** first (no waiting).
@@ -253,6 +271,11 @@ Each site parser:
 - Tags load asynchronously in background (`waitForTagsInBackground`).
 - If immediate parse fails, waits for critical elements only (`#highres`, `#hidden_post_id`, `#image`).
 - `#tag-sidebar` is NOT waited for — avoids blocking on slow tag sidebar loads.
+
+**Rule34 Blocked Page Detection (post pages only):**
+- On post page load, checks for 429 rate limit or Cloudflare CAPTCHA
+- **429 detected:** Shows warning toast, auto-refreshes after 2 seconds
+- **CAPTCHA detected:** Shows red banner at page top, tries to focus the tab, creates interval checking for solution. Once solved: broadcasts `captchaSolved` to background, continues normal parsing
 
 **Key state variables:**
 - `currentParsedData` - Cached parsed data from current page
@@ -270,8 +293,20 @@ Each site parser:
 - `chrome.storage.onChanged` - Sync progress across tabs (registered ONCE via guard flag)
 - `beforeunload` - Cleans up `save-progress` from storage on tab close
 
+**Message handlers (chrome.runtime.onMessage):**
+- `saveResult` — Save completed/failed (handles both post-page and hidden tab saves)
+- `hotkeyAction` — Hotkey triggered
+- `parseForMainPageSave` — Hidden tab requests parse data (async, passes message object with `checkBlocker` flag)
+- `pingContentScript` — Background checks if content script is ready
+- `hotkeysUpdated` — Hotkeys changed in popup
+- `settingsChanged` — Settings changed in popup
+- `captchaDetected` — Background reports CAPTCHA on hidden tab
+- `captchaSolved` — CAPTCHA solved on another tab → reload if this tab is also blocked
+- `hiddenTabBlocked` — Background reports hidden tab save failure (CAPTCHA or rate limit)
+
 **Hidden tab handling:**
 - Listens for `parseForMainPageSave` message from background
+- If `checkBlocker` flag is true, checks for 429/CAPTCHA first → returns `{blocked: true, blockerType}`
 - Parses page and returns data for hidden tab saves
 - For Sankaku: waits for critical elements only (no tag sidebar)
 - For gelbooru: tries canvas extraction, falls back to URL-only
@@ -292,7 +327,19 @@ Each site parser:
 - `chrome.runtime.onMessage` listener registered only once via guard flag
 
 ### background/service-worker.js
-**Purpose:** Download queue, Eagle API calls, cross-tab messaging, hidden tab saves
+**Purpose:** Download queue, Eagle API calls, cross-tab messaging, hidden tab saves, rate limiting
+
+**RateLimiter (new):**
+- `RateLimiter` class with per-domain request tracking
+- `waitIfNeeded(hostname)` — Waits if the minimum interval (800ms for rule34) hasn't elapsed
+- `onRateLimited(hostname)` — Doubles delay multiplier (up to 8x) on 429
+- `onCaptchaDetected(hostname)` — Similar multiplier increase for CAPTCHA
+- `onSuccess(hostname)` — Gradually decreases multiplier on success
+- `reset(hostname)` — Resets all tracking for a domain
+- Global instance `rateLimiter` shared across all background operations
+
+**RULE34_CONFIG_BG (inline):**
+- Since `config.js` is not available in background context, an inline configuration `RULE34_CONFIG_BG` is defined with matching values.
 
 **Queue Architecture (Two-Phase Enqueue):**
 - `DownloadSaveQueue` class manages parallel downloads + sequential saves
@@ -301,7 +348,7 @@ Each site parser:
 - **Phase 2 (parse):** Hidden tab parses in background, calls `updateParsedData()` to transition task to `pending_download`
 - **Downloads** run in parallel (one per task)
 - **Saves** run sequentially in FIFO order
-- `_processSaveQueue()` polls `pending_parse` tasks every 200ms with 30s timeout
+- `_processSaveQueue()` polls `pending_parse` tasks every 200ms with 120s timeout (increased from 30s for rule34 retries)
 - Keep-alive alarm prevents Chrome from killing the worker during long downloads
 - AbortController for each download (supports cancellation)
 - `task.base64 = null` before task removal to free memory
@@ -313,15 +360,18 @@ Each site parser:
 - `markTaskFailed(taskId, error)` - Marks task as failed
 - `clear()` - Clears all tasks, aborts downloads, cleans up `queue-state` from storage
 
-**Hidden Tab Save Flow:**
+**Hidden Tab Save Flow (with retry logic for rule34):**
 1. User clicks thumbnail button on main page
 2. `handleHiddenTabParse()` creates task in `pending_parse` state **immediately** with `website` and `referer` set to postUrl (order preserved!)
 3. Returns `{success, position, taskId}` to the content script right away
-4. `_parseHiddenTabInBackground()` opens hidden tab, parses, calls `queue.updateParsedData()`
-5. For gelbooru: sets `useUrlDirect = true` (Eagle downloads URL directly); if canvas extraction succeeds, uses base64 instead
-6. Queue processes task in FIFO order when ready
-7. Hidden tab closed after download completes
-8. `reportQueueState()` writes queue state to `chrome.storage.local['queue-state']` after every queue change
+4. `_parseHiddenTabInBackground()` opens hidden tab, **with rate limiting applied first**
+5. Content script checks for 429/CAPTCHA (if `checkBlocker` flag is true)
+6. If blocked: closes tab, applies exponential backoff (3-15s), retries up to `MAX_RETRIES` (5) times
+7. If CAPTCHA persists: task marked as failed with message "CAPTCHA: Open the post page manually to solve CAPTCHA", user notified via `hiddenTabBlocked`
+8. If parse succeeds: calls `queue.updateParsedData()`, queue processes in FIFO order
+9. For gelbooru: sets `useUrlDirect = true` (Eagle downloads URL directly); if canvas extraction succeeds, uses base64 instead
+10. Hidden tab closed after download completes
+11. `reportQueueState()` writes queue state to `chrome.storage.local['queue-state']` after every queue change
 
 **Functions:**
 - `reportQueueState()` - Writes current queue state to storage for queue panel consumption; includes task list with postId, state, progress
@@ -336,6 +386,10 @@ Each site parser:
 - `saveFromContentScript` - Save from content script (base64 or URL)
 - `saveFromMainPage` - Save post from main page via hidden tab (two-phase enqueue)
 - `updateHotkeys` - Update hotkey configuration
+- `settingsChanged` - Broadcast settings to all open tabs
+- `focusTab` - Focus a tab (used for CAPTCHA solver notification)
+- `captchaSolved` - CAPTCHA solved on one tab; notifies other blocked rule34 tabs to refresh; resets rate limiter
+- `hiddenTabBlocked` - Notifies user tab that a hidden tab was blocked (focuses tab)
 
 **Hotkeys:**
 - `Alt+Z` - Save
@@ -368,6 +422,7 @@ User opens post page
 │ .findParser()    │   │ (create UI)  │
 └────────┬─────────┘   └──────┬───────┘
          │                    │
+         │   [Rule34: check for 429/CAPTCHA]
          ▼                    │
   Detected Parser             │
   .parse()                    │
@@ -442,7 +497,7 @@ User clicks Save on gelbooru post page
 └─────────────────────────┘
 ```
 
-### Thumbnail Save (from main/search page) — Two-Phase Enqueue
+### Thumbnail Save (from main/search page) — Two-Phase Enqueue with Rule34 Retry Logic
 ```
 User clicks 🦅 button on thumbnail
         │
@@ -465,16 +520,29 @@ User clicks 🦅 button on thumbnail
 └─────────────────────────┘
           │
           ▼ (async, doesn't block)
-┌─────────────────────────┐
-│ _parseHiddenTabInBackground() │
-│ - Opens hidden tab       │
-│ - Parses page            │
-│ - queue.updateParsedData()│ ← Task transitions to pending_download
-│   (merges tags, sets    │
-│    useUrlDirect for     │
-│    gelbooru)            │
-│ - Hidden tab closes      │
-└─────────┬───────────────┘
+┌─────────────────────────────────────┐
+│ _parseHiddenTabInBackground()       │
+│                                     │
+│ [If rule34: rateLimiter.waitIfNeeded()] │
+│                                     │
+│ Loop (up to MAX_RETRIES times):     │
+│  - Open hidden tab                  │
+│  - Wait for content script          │
+│  - Request parse with checkBlocker  │
+│  - If 429: close tab, delay, retry  │
+│  - If CAPTCHA: close tab, delay,    │
+│    notify user, retry               │
+│  - If success: break loop           │
+│                                     │
+│ On success:                         │
+│  - queue.updateParsedData()         │
+│  - Wait for download complete       │
+│  - Close hidden tab                 │
+│                                     │
+│ On all retries exhausted:           │
+│  - queue.markTaskFailed()           │
+│  - Notify user via hiddenTabBlocked │
+└─────────────────────────────────────┘
           │
           ▼ queue processes in FIFO order
 ┌─────────────────────────┐
@@ -496,6 +564,40 @@ User clicks 🦅 button on thumbnail
 │ Update button state     │
 │ (green/red)             │
 └─────────────────────────┘
+```
+
+### Post Page Rule34 Blocked Page Flow
+```
+User opens post page on rule34.xxx
+        │
+        ▼
+┌─────────────────────┐
+│   content/main.js   │
+│   init()            │
+└─────────┬───────────┘
+          │
+          ▼ Check for blocker
+┌───────────────────────────────┐
+│ Rule34Parser.getBlockerType() │
+├───────────────────────────────┤
+│ 'rate_limit' →                │
+│  - Show "429 Retrying..." msg │
+│  - Auto-refresh after 2s      │
+│                               │
+│ 'captcha' →                   │
+│  - Show "CAPTCHA blocked" msg │
+│  - Focus this tab for user    │
+│  - Show red banner with       │
+│    post ID and instructions   │
+│  - Poll every 1s for solution │
+│  - When solved:               │
+│    → broadcast captchaSolved  │
+│    → continue normal parse    │
+│                               │
+│ null →                        │
+│  - Continue normal init       │
+│  - Parse page, show panel     │
+└───────────────────────────────┘
 ```
 
 ## Adding a New Site
@@ -546,7 +648,7 @@ Set `enabled: false` in the `PARSERS` array.
 
 6. **Background for downloads + API:** Content scripts cannot make cross-origin requests to localhost.
 
-7. **Two-phase enqueue:** Thumbnail saves create task in `pending_parse` state immediately. Hidden tab parses asynchronously. Queue processes FIFO, polling `pending_parse` every 200ms with 30s timeout.
+7. **Two-phase enqueue:** Thumbnail saves create task in `pending_parse` state immediately. Hidden tab parses asynchronously. Queue processes FIFO, polling `pending_parse` every 200ms with 120s timeout (increased for rule34 retries).
 
 8. **Queue states:** Explicit state tracking: `pending_parse` → `pending_download` → `downloading` → `download_complete` → saved/failed.
 
@@ -591,6 +693,13 @@ Set `enabled: false` in the `PARSERS` array.
 26. **Advanced Settings (Collapsible):** The Settings view in popup.html has a collapsible "Advanced" section, toggled via a ▼/▲ arrow button. Clicking expands/collapses with CSS max-height animation. Currently contains a single toggle switch: "Parse image notes" (Rule34.xxx notes → Eagle annotation). Settings are stored in `chrome.storage.local['settings']` as `{ parseNotes: boolean }`. Changes are broadcast to all tabs via `settingsChanged` message through the background worker. Content scripts load settings on init and update dynamically. The toggle uses an iOS-style switch (CSS-only, no dependencies).
 
 27. **Event listener protection:** `window.addEventListener` for `booru-eagle-retry`, `booru-eagle-save`, `chrome.storage.onChanged`, and `chrome.runtime.onMessage` are all guarded by `_booruEagle*ListenerRegistered` flags to prevent accumulation on SPA navigation. Listeners use `currentParser` and `currentPanel` globals instead of closure-captured references to avoid stale references after panel recreation.
+
+28. **Rule34 rate limiting & CAPTCHA handling:**
+    - **Preventive rate limiting:** `RateLimiter` in background enforces 800ms minimum interval between hidden tab requests to rule34.xxx, preventing most 429 errors.
+    - **Retry on 429:** If a 429 occurs, the background worker closes the hidden tab, exponentially backs off (3s, 6s, 12s...), and retries up to 5 times. Queue order is preserved because the task was enqueued before the hidden tab was opened.
+    - **Retry on CAPTCHA:** Similar retry logic for CAPTCHA pages (5s initial delay). If CAPTCHA persists after all retries, the user is notified via `hiddenTabBlocked` message and the tab is focused.
+    - **Post page detection:** On user-opened post pages, the content script detects 429 (auto-refresh after 2s) and CAPTCHA (shows red banner, polls for solution). When CAPTCHA is solved on one tab, `captchaSolved` is broadcast to all other tabs, which also reload if they were blocked.
+    - **Parse timeout:** Increased from 30s to 120s to accommodate rule34 retry delays.
 
 ## Eagle API Reference
 
@@ -646,13 +755,19 @@ Edit `ensureParsedData()`, `waitForCriticalElements()`, `waitForTagsInBackground
 ### Change queue panel behavior
 Edit `content/queue-panel.js` — BooruEagleQueuePanel class
 
+### Change rule34 rate limiting behavior
+Edit `RULE34_CONFIG` in `config.js` or `RULE34_CONFIG_BG` in `background/service-worker.js`
+
+### Change CAPTCHA/429 handling behavior
+Edit the blocking detection section in `content/main.js` `init()` function
+
 ## Supported Sites
 
-| Site | Post Page | Thumbnail | Notes |
-|------|-----------|-----------|-------|
-| Danbooru (donmai.us) | ✅ | ✅ | Standard flow |
-| Gelbooru (gelbooru.com) | ✅ | ✅ | URL sent directly to Eagle (CORS workaround) |
-| Konachan (konachan.com) | ✅ | ✅ | Standard flow |
-| Rule34 (rule34.xxx) | ✅ | ✅ | Standard flow |
-| Sankaku (chan.sankakucomplex.com) | ✅ | ✅ | Quick parse: immediate parse first, tags load in background |
-| yande.re | ✅ | ✅ | Standard flow |
+| Site | Post Page | Thumbnail | Notes | Rule34 Blocker Handling |
+|------|-----------|-----------|-------|------------------------|
+| Danbooru (donmai.us) | ✅ | ✅ | Standard flow | N/A |
+| Gelbooru (gelbooru.com) | ✅ | ✅ | URL sent directly to Eagle (CORS workaround) | N/A |
+| Konachan (konachan.com) | ✅ | ✅ | Standard flow | N/A |
+| Rule34 (rule34.xxx) | ✅ | ✅ | Standard flow + blocked page detection | ✅ 429 auto-refresh + CAPTCHA banner + hidden tab retry logic |
+| Sankaku (chan.sankakucomplex.com) | ✅ | ✅ | Quick parse: immediate parse first, tags load in background | N/A |
+| yande.re | ✅ | ✅ | Standard flow | N/A |

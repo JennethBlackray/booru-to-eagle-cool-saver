@@ -408,6 +408,125 @@
       initProgressFromStorage();
       return;
     }
+
+    // ==================== RULE34 BLOCKED PAGE DETECTION ====================
+    // Check if current page is blocked (429 rate limit or CAPTCHA)
+    if (window.location.hostname.includes('rule34') && typeof Rule34Parser !== 'undefined') {
+      const blockerType = Rule34Parser.getBlockerType();
+      
+      if (blockerType === 'rate_limit') {
+        // 429 rate limiting: auto-refresh after delay
+        console.log('[BooruEagle] Rate limited (429), auto-refreshing in 2s...');
+        panel.updateStatus('warning', 'Rate limited, retrying...');
+        panel.showToast('429 rate limit detected. Retrying in 2 seconds...', 'warning');
+        
+        // Store current URL for post-refresh re-parse
+        setTimeout(() => {
+          window.location.reload();
+        }, 2000);
+        return;
+      }
+      
+      if (blockerType === 'captcha') {
+        // CAPTCHA page: notify user and wait
+        console.log('[BooruEagle] CAPTCHA detected on post page');
+        panel.updateStatus('warning', 'CAPTCHA blocked - solve in tab');
+        panel.showToast('CAPTCHA detected! Solve it in this tab to continue...', 'warning');
+        
+        // Try to focus this tab so user can solve the CAPTCHA
+        try {
+          chrome.runtime.sendMessage({
+            action: 'focusTab',
+            tabId: null // Current tab
+          });
+        } catch (e) {}
+        
+        // Try to bring the panel to attention
+        if (panel.panel) {
+          panel.panel.style.setProperty('z-index', '99999', 'important');
+          
+          // Create a prominent notification banner
+          const banner = document.createElement('div');
+          banner.id = 'booru-eagle-captcha-banner';
+          banner.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #ff4444;
+            color: white;
+            padding: 12px 20px;
+            text-align: center;
+            font-size: 16px;
+            font-weight: bold;
+            z-index: 999999;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+          `;
+          const postId = parser.getPostId ? parser.getPostId() : 'unknown';
+          banner.textContent = `⚠️ CAPTCHA BLOCKED (post #${postId}): Solve the "I'm not a robot" checkbox on this page to continue saving.`;
+          
+          // Add close button
+          const closeBtn = document.createElement('button');
+          closeBtn.textContent = '✕';
+          closeBtn.style.cssText = `
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.5);
+            color: white;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 2px 8px;
+            border-radius: 3px;
+          `;
+          closeBtn.onclick = () => banner.remove();
+          banner.appendChild(closeBtn);
+          document.body.prepend(banner);
+          
+          // Auto-dismiss after solving CAPTCHA or after 2 minutes
+          const checkCaptchaSolved = setInterval(() => {
+            if (!Rule34Parser.isCaptchaPage()) {
+              // CAPTCHA solved - remove banner and refresh
+              banner.remove();
+              clearInterval(checkCaptchaSolved);
+              console.log('[BooruEagle] CAPTCHA solved, proceeding...');
+              panel.updateStatus('info', 'Loading...');
+              panel.showToast('CAPTCHA solved! Loading page...', 'success');
+              
+              // Re-init to let other blocked pages know
+              chrome.runtime.sendMessage({
+                action: 'captchaSolved',
+                hostname: window.location.hostname
+              }).catch(() => {});
+              
+              // Continue normal initialization
+              setTimeout(() => {
+                if (isSankakuSite()) {
+                  parseInBackground(parser, panel).catch(e => {
+                    console.warn('[BooruEagle] Background parse failed:', e);
+                  });
+                } else {
+                  parsePage(parser, panel);
+                }
+              }, 500);
+            }
+          }, 1000);
+          
+          // Store interval for cleanup
+          window._captchaCheckInterval = checkCaptchaSolved;
+          
+          // Remove banner after 2 minutes
+          setTimeout(() => {
+            clearInterval(checkCaptchaSolved);
+            if (banner.parentNode) banner.remove();
+          }, 120000);
+        }
+        
+        return;
+      }
+    }
     
     // Sankaku: enable buttons immediately, parse in background
     if (isSankakuSite()) {
@@ -487,7 +606,7 @@
         sendResponse({ ok: true });
       } else if (message.action === 'parseForMainPageSave') {
         // Hidden tab requests parse data (async)
-        handleParseForMainPageSave().then(sendResponse);
+        handleParseForMainPageSave(message).then(sendResponse);
         return true; // Keep channel open for async response
       } else if (message.action === 'pingContentScript') {
         // Background checking if content script is ready
@@ -508,6 +627,37 @@
           // Re-apply micro-fixes with new settings
           if (microFixes) {
             microFixes.applyAll(window.extensionSettings);
+          }
+        }
+        sendResponse({ ok: true });
+      } else if (message.action === 'captchaDetected') {
+        // Background tells us a hidden tab hit a CAPTCHA
+        console.log('[BooruEagle] CAPTCHA detected on hidden tab:', message.postUrl);
+        if (currentPanel) {
+          currentPanel.showToast('CAPTCHA detected on hidden tab, retrying...', 'warning');
+        }
+        sendResponse({ ok: true });
+      } else if (message.action === 'captchaSolved') {
+        // CAPTCHA was solved elsewhere - reload this page if it's blocked
+        console.log('[BooruEagle] CAPTCHA solved elsewhere, checking this page...');
+        if (typeof Rule34Parser !== 'undefined' && Rule34Parser.getBlockerType()) {
+          if (currentPanel) {
+            currentPanel.updateStatus('info', 'CAPTCHA solved, reloading...');
+            currentPanel.showToast('CAPTCHA solved on another tab! Reloading...', 'success');
+          }
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+        }
+        sendResponse({ ok: true });
+      } else if (message.action === 'hiddenTabBlocked') {
+        // Background tells us a hidden tab save failed due to blocking
+        console.log('[BooruEagle] Hidden tab blocked:', message.blockerType, 'for post', message.postId);
+        if (currentPanel) {
+          if (message.blockerType === 'captcha') {
+            currentPanel.showToast('CAPTCHA blocked. Open rule34 in a tab and solve it.', 'warning');
+          } else {
+            currentPanel.showToast(`Rate limited for post #${message.postId}. Retrying...`, 'warning');
           }
         }
         sendResponse({ ok: true });
@@ -602,14 +752,29 @@
    * Handle parse request from hidden tab (for main page save)
    * Called when background worker sends 'parseForMainPageSave' message
    * Waits for page elements to load before parsing (important for Sankaku)
+   * For rule34, checks for blocked pages (429/CAPTCHA) first
    * For gelbooru, also downloads the image as base64
    */
-  async function handleParseForMainPageSave() {
+  async function handleParseForMainPageSave(message) {
     if (!currentParser) {
       return { success: false, error: 'No parser available' };
     }
 
     try {
+      // Check for blocked pages (429 or CAPTCHA) - only if requested
+      const shouldCheckBlocker = message?.checkBlocker === true;
+      if (shouldCheckBlocker && typeof Rule34Parser !== 'undefined') {
+        const blockerType = Rule34Parser.getBlockerType();
+        if (blockerType) {
+          console.log(`[BooruEagle] Hidden tab: page blocked (${blockerType}), notifying background`);
+          return { 
+            blocked: true, 
+            blockerType: blockerType,
+            success: false
+          };
+        }
+      }
+
       // For Sankaku, wait for CRITICAL elements only (page is dynamic)
       // Tags are NOT needed for the save operation - they're added from parsed data
       if (isSankakuSite()) {
@@ -633,6 +798,13 @@
       const data = await currentParser.parse();
 
       if (!data || !data.imageUrl) {
+        // If no image URL parsed and it's rule34, might be blocked
+        if (shouldCheckBlocker && window.location.hostname.includes('rule34')) {
+          const blockerType = Rule34Parser.getBlockerType();
+          if (blockerType) {
+            return { blocked: true, blockerType, success: false };
+          }
+        }
         return { success: false, error: 'Could not parse post data' };
       }
 

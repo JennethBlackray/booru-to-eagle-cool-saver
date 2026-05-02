@@ -13,6 +13,100 @@ const DOWNLOAD_TIMEOUT_MS = 360000; // 6 minutes
 const DOWNLOAD_WAIT_TIMEOUT_MS = 300000; // 5 minutes
 const SAVE_DELAY_MS = 300;
 
+// ==================== RULE34 CONFIGURATION ====================
+
+// Inline configuration for rule34 handling
+// (config.js is not available in background context)
+const RULE34_CONFIG_BG = {
+  MIN_REQUEST_INTERVAL: 800,
+  RETRY_DELAY_429: 3000,
+  RETRY_DELAY_CAPTCHA: 5000,
+  MAX_RETRIES: 5
+};
+
+// ==================== RATE LIMITER & BLOCKER DETECTION ====================
+
+/**
+ * Rate limiter for rule34.xxx requests
+ * Tracks last request time per domain to avoid 429 rate limiting
+ */
+class RateLimiter {
+  constructor() {
+    /** @type {Map<string, number>} Domain -> last request timestamp */
+    this.lastRequestTime = new Map();
+    /** @type {Map<string, number>} Domain -> current delay multiplier */
+    this.delayMultiplier = new Map();
+  }
+
+  /**
+   * Wait if needed to respect rate limits for a domain
+   * @param {string} hostname - The domain to rate limit
+   * @param {number} [minInterval=RULE34_CONFIG_BG.MIN_REQUEST_INTERVAL] - Minimum interval in ms
+   * @returns {Promise<void>}
+   */
+  async waitIfNeeded(hostname, minInterval = RULE34_CONFIG_BG.MIN_REQUEST_INTERVAL) {
+    const lastTime = this.lastRequestTime.get(hostname) || 0;
+    const elapsed = Date.now() - lastTime;
+    
+    if (elapsed < minInterval) {
+      const waitTime = minInterval - elapsed;
+      console.log(`[RateLimiter] Waiting ${waitTime}ms before next request to ${hostname}`);
+      await delay(waitTime);
+    }
+    
+    this.lastRequestTime.set(hostname, Date.now());
+  }
+
+  /**
+   * On 429, increase delay multiplier
+   * @param {string} hostname
+   */
+  onRateLimited(hostname) {
+    const current = this.delayMultiplier.get(hostname) || 1;
+    const next = Math.min(current * 2, 8); // Max 8x multiplier
+    this.delayMultiplier.set(hostname, next);
+    // Also set lastRequestTime further in the past to enforce longer wait
+    this.lastRequestTime.set(hostname, Date.now() - RULE34_CONFIG_BG.MIN_REQUEST_INTERVAL + (RULE34_CONFIG_BG.RETRY_DELAY_429 * current));
+    console.log(`[RateLimiter] Rate limited on ${hostname}, multiplier: ${next}x`);
+  }
+
+  /**
+   * On CAPTCHA, increase delay multiplier
+   * @param {string} hostname
+   */
+  onCaptchaDetected(hostname) {
+    const current = this.delayMultiplier.get(hostname) || 1;
+    const next = Math.min(current * 2, 8);
+    this.delayMultiplier.set(hostname, next);
+    this.lastRequestTime.set(hostname, Date.now() - RULE34_CONFIG_BG.MIN_REQUEST_INTERVAL + (RULE34_CONFIG_BG.RETRY_DELAY_CAPTCHA * current));
+    console.log(`[RateLimiter] CAPTCHA on ${hostname}, multiplier: ${next}x`);
+  }
+
+  /**
+   * On success, gradually decrease multiplier
+   * @param {string} hostname
+   */
+  onSuccess(hostname) {
+    const current = this.delayMultiplier.get(hostname) || 1;
+    if (current > 1) {
+      const next = Math.max(current / 2, 1);
+      this.delayMultiplier.set(hostname, next);
+    }
+  }
+
+  /**
+   * Reset multiplier for a domain
+   * @param {string} hostname
+   */
+  reset(hostname) {
+    this.delayMultiplier.delete(hostname);
+    this.lastRequestTime.delete(hostname);
+  }
+}
+
+/** Global rate limiter instance */
+const rateLimiter = new RateLimiter();
+
 // ==================== HOTKEYS ====================
 
 const DEFAULT_HOTKEYS = {
@@ -330,7 +424,7 @@ class DownloadSaveQueue {
         }
 
         const waitTime = Date.now() - pendingParseStartTime.get(task.taskId);
-        if (waitTime > 30000) { // 30 second timeout for parsing
+        if (waitTime > 120000) { // 120 second timeout for parsing (rule34 may need retries)
           task.state = 'failed';
           task.downloadError = 'Parse timeout (30s)';
           task.downloadComplete = true;
@@ -878,96 +972,186 @@ async function handleHiddenTabParse(postId, hostname, sourceTabId, lockedParentI
 }
 
 /**
- * Background task: open hidden tab, parse, update queue task with data
- * This runs asynchronously and doesn't block the queue order
+ * Background task: open hidden tab, parse, update queue task with data.
+ * Includes rate limiting and retry logic for rule34.xxx to handle 429/CAPTCHA.
+ * This runs asynchronously and doesn't block the queue order.
+ * Queue order is preserved because tasks are enqueued BEFORE this function runs.
  */
 async function _parseHiddenTabInBackground(taskId, postId, hostname, sourceTabId, lockedParentId = null) {
   const log = (msg) => console.log(`[HiddenTab BG ${taskId}] ${msg}`);
   log('Starting background parse...');
 
   const postUrl = buildPostPageUrl(hostname, postId);
-
-  const hiddenTab = await chrome.tabs.create({
-    url: postUrl,
-    active: false,
-    selected: false,
-    pinned: false,
-    openerTabId: sourceTabId
-  });
-
-  const hiddenTabId = hiddenTab.id;
-  log(`Hidden tab created: ${hiddenTabId}`);
-
-  try {
-    const contentReady = await waitForContentScript(hiddenTabId, 15000);
-    if (!contentReady) {
-      throw new Error('Content script did not initialize');
-    }
-
-    log('Content script ready, requesting parse...');
-
-    const parseResult = await chrome.tabs.sendMessage(hiddenTabId, {
-      action: 'parseForMainPageSave'
-    });
-
-    if (!parseResult || !parseResult.success) {
-      throw new Error(parseResult?.error || 'Failed to parse post page');
-    }
-
-    log(`Parsed: ${parseResult.data.imageUrl}, ${parseResult.data.tags?.length || 0} tags`);
-
-    // For gelbooru: decide whether to use URL direct or base64
-    const task = queue.tasks.find(t => t.taskId === taskId);
-    if (task && hostname.includes('gelbooru')) {
-      if (parseResult.base64) {
-        // Canvas extraction succeeded - use base64
-        log('Gelbooru: using base64 from canvas extraction');
-        task.useUrlDirect = false;
-        task.saveData.useUrlDirect = false;
-      } else if (parseResult.data.imageUrl) {
-        // No base64 - use URL direct
-        log('Gelbooru: setting useUrlDirect flag');
-        task.useUrlDirect = true;
-        task.saveData.useUrlDirect = true;
+  const isRule34 = hostname.includes('rule34.xxx');
+  
+  let retryCount = 0;
+  const maxRetries = isRule34 ? RULE34_CONFIG_BG.MAX_RETRIES : 1;
+  
+  while (retryCount <= maxRetries) {
+    let hiddenTabId = null;
+    
+    try {
+      // Apply rate limiting for rule34 (wait if too many requests)
+      if (isRule34) {
+        await rateLimiter.waitIfNeeded(hostname);
       }
-    }
+      
+      // Create hidden tab
+      const hiddenTab = await chrome.tabs.create({
+        url: postUrl,
+        active: false,
+        selected: false,
+        pinned: false,
+        openerTabId: sourceTabId
+      });
 
-    // Update the queue task with parsed data
-    const updated = queue.updateParsedData(taskId, parseResult.data, parseResult.base64 || null);
+      hiddenTabId = hiddenTab.id;
+      log(`Hidden tab created: ${hiddenTabId} (attempt ${retryCount + 1}/${maxRetries + 1})`);
 
-    if (!updated) {
-      throw new Error('Failed to update queue task with parsed data');
-    }
+      // Wait for content script to initialize
+      const contentReady = await waitForContentScript(hiddenTabId, 15000);
+      if (!contentReady) {
+        throw new Error('Content script did not initialize');
+      }
 
-    // Update task's tabId for download cookies/referer
-    if (task) {
-      task.tabId = hiddenTabId;
-    }
+      // Request parse - this also checks for blocked pages
+      const parseResult = await chrome.tabs.sendMessage(hiddenTabId, {
+        action: 'parseForMainPageSave',
+        checkBlocker: isRule34  // Tell content script to check for 429/CAPTCHA
+      });
 
-    log('Task updated with parsed data, waiting for queue processing');
+      if (!parseResult) {
+        throw new Error('No response from content script');
+      }
 
-    // Wait for download to complete before closing tab
-    while (task && !task.downloadComplete) {
-      await delay(500);
-    }
+      // Check for blocked page (429 or CAPTCHA)
+      if (parseResult.blocked) {
+        const blockerType = parseResult.blockerType; // 'rate_limit' or 'captcha'
+        
+        if (blockerType === 'rate_limit') {
+          rateLimiter.onRateLimited(hostname);
+          log(`Rate limited (429), retrying in ${RULE34_CONFIG_BG.RETRY_DELAY_429}ms...`);
+        } else if (blockerType === 'captcha') {
+          rateLimiter.onCaptchaDetected(hostname);
+          log(`CAPTCHA detected, retrying in ${RULE34_CONFIG_BG.RETRY_DELAY_CAPTCHA}ms...`);
+          
+          // Notify the user that CAPTCHA needs solving
+          try {
+            chrome.tabs.sendMessage(sourceTabId, {
+              action: 'captchaDetected',
+              postUrl: postUrl,
+              taskId: taskId
+            }).catch(() => {});
+          } catch (e) {}
+        } else {
+          log(`Unknown blocker type: ${blockerType}, retrying...`);
+        }
+        
+        // Close the blocked hidden tab
+        try { await chrome.tabs.remove(hiddenTabId); } catch (e) {}
+        hiddenTabId = null;
+        
+        retryCount++;
+        
+        if (retryCount > maxRetries) {
+          const errorMsg = blockerType === 'captcha' 
+            ? 'CAPTCHA: Open the post page manually to solve CAPTCHA'
+            : 'Rate limited: Exceeded maximum retries';
+          log(errorMsg);
+          
+          // Notify user on source tab about the failure
+          try {
+            chrome.tabs.sendMessage(sourceTabId, {
+              action: 'hiddenTabBlocked',
+              taskId: taskId,
+              postId: postId,
+              postUrl: postUrl,
+              blockerType: blockerType
+            }).catch(() => {});
+          } catch (e) {}
+          
+          queue.markTaskFailed(taskId, errorMsg);
+          return;
+        }
+        
+        // Exponential backoff delay before retry
+        const delayMs = blockerType === 'captcha' 
+          ? RULE34_CONFIG_BG.RETRY_DELAY_CAPTCHA
+          : RULE34_CONFIG_BG.RETRY_DELAY_429;
+        await delay(delayMs * Math.min(retryCount, 3)); // Scale delay with retry count
+        continue;
+      }
 
-    log('Download complete, closing hidden tab');
-    try {
-      await chrome.tabs.remove(hiddenTabId);
+      // Parse succeeded - process result
+      if (!parseResult.success) {
+        throw new Error(parseResult?.error || 'Failed to parse post page');
+      }
+
+      log(`Parsed: ${parseResult.data.imageUrl}, ${parseResult.data.tags?.length || 0} tags`);
+
+      // Report success to rate limiter (gradually reduce multiplier)
+      if (isRule34) {
+        rateLimiter.onSuccess(hostname);
+      }
+
+      // For gelbooru: decide whether to use URL direct or base64
+      const task = queue.tasks.find(t => t.taskId === taskId);
+      if (task && hostname.includes('gelbooru')) {
+        if (parseResult.base64) {
+          log('Gelbooru: using base64 from canvas extraction');
+          task.useUrlDirect = false;
+          task.saveData.useUrlDirect = false;
+        } else if (parseResult.data.imageUrl) {
+          log('Gelbooru: setting useUrlDirect flag');
+          task.useUrlDirect = true;
+          task.saveData.useUrlDirect = true;
+        }
+      }
+
+      // Update the queue task with parsed data
+      const updated = queue.updateParsedData(taskId, parseResult.data, parseResult.base64 || null);
+
+      if (!updated) {
+        throw new Error('Failed to update queue task with parsed data');
+      }
+
+      // Update task's tabId for download cookies/referer
+      if (task) {
+        task.tabId = hiddenTabId;
+      }
+
+      log('Task updated with parsed data, waiting for queue processing');
+
+      // Wait for download to complete before closing tab
+      while (task && !task.downloadComplete) {
+        await delay(500);
+      }
+
+      log('Download complete, closing hidden tab');
+      try { await chrome.tabs.remove(hiddenTabId); } catch (e) {}
       log('Hidden tab closed');
-    } catch (e) {
-      // Tab may already be closed
+      return; // Success!
+
+    } catch (error) {
+      log(`Attempt ${retryCount + 1} error: ${error.message}`);
+      
+      // Close hidden tab on error
+      if (hiddenTabId) {
+        try { await chrome.tabs.remove(hiddenTabId); } catch (e) {}
+      }
+      
+      if (isRule34 && retryCount < maxRetries) {
+        // For rule34, retry on transient errors too
+        rateLimiter.onRateLimited(hostname);
+        retryCount++;
+        await delay(RULE34_CONFIG_BG.RETRY_DELAY_429 * retryCount);
+        continue;
+      }
+      
+      // Non-rule34 or exhausted retries: mark as failed
+      queue.markTaskFailed(taskId, error.message);
+      return;
     }
-
-  } catch (error) {
-    log(`Error: ${error.message}`);
-    queue.markTaskFailed(taskId, error.message);
-
-    // Close hidden tab on error
-    try {
-      await chrome.tabs.remove(hiddenTabId);
-      log('Hidden tab closed (error)');
-    } catch (e) {}
   }
 }
 
@@ -1071,6 +1255,49 @@ async function handleMessage(message, sender) {
           }).catch(() => {});
         });
       });
+      return { ok: true };
+    }
+
+    case 'focusTab': {
+      // Focus a tab (for CAPTCHA solver)
+      if (sender.tab?.id) {
+        chrome.tabs.update(sender.tab.id, { active: true });
+        chrome.windows.update(sender.tab.windowId, { focused: true });
+      }
+      return { ok: true };
+    }
+
+    case 'captchaSolved': {
+      // CAPTCHA was solved on one tab - refresh other blocked rule34 tabs
+      const hostname = message.hostname;
+      console.log(`[BG] CAPTCHA solved on ${hostname}, refreshing blocked tabs...`);
+      chrome.tabs.query({}, (tabs) => {
+        tabs.forEach(tab => {
+          if (tab.id === sender.tab?.id) return;
+          if (!tab.url || !tab.url.includes(hostname)) return;
+          
+          // Tell content script that CAPTCHA was solved elsewhere
+          chrome.tabs.sendMessage(tab.id, {
+            action: 'captchaSolved',
+            hostname: hostname
+          }).catch(() => {});
+        });
+      });
+      
+      // Reset rate limiter since CAPTCHA is solved
+      if (hostname) {
+        rateLimiter.reset(hostname);
+      }
+      return { ok: true };
+    }
+
+    case 'hiddenTabBlocked': {
+      // Notify user that a hidden tab was blocked (CAPTCHA or rate limit)
+      console.log(`[BG] Hidden tab blocked: ${message.blockerType} for post ${message.postId}`);
+      try {
+        chrome.tabs.update(sender.tab.id, { active: true });
+        chrome.windows.update(sender.tab.windowId, { focused: true });
+      } catch (e) {}
       return { ok: true };
     }
 

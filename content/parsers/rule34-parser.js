@@ -21,6 +21,83 @@ class Rule34Parser extends BaseParser {
   }
 
   /**
+   * Check if current page is a 429 rate limiting page
+   * @static
+   * @returns {boolean}
+   */
+  static isRateLimited() {
+    const title = document.title.toLowerCase();
+    return title.includes('429') && title.includes('rate limit');
+  }
+
+  /**
+   * Check if current page is a Cloudflare CAPTCHA challenge page
+   * @static
+   * @returns {boolean}
+   */
+  static isCaptchaPage() {
+    const title = document.title.toLowerCase();
+    // Russian: "Один момент…", English: "One moment…"
+    return title.includes('один момент') || title.includes('one moment');
+  }
+
+  /**
+   * Check if current page is blocked (429 or CAPTCHA)
+   * @static
+   * @returns {string|null} 'rate_limit' | 'captcha' | null
+   */
+  static getBlockerType() {
+    if (this.isRateLimited()) return 'rate_limit';
+    if (this.isCaptchaPage()) return 'captcha';
+    return null;
+  }
+
+  /**
+   * Check if the Cloudflare CAPTCHA has been solved (success state)
+   * @static
+   * @returns {boolean}
+   */
+  static isCaptchaSolved() {
+    // After solving, the page should redirect/reload to the actual content
+    // Check if the blocker is no longer present
+    if (!this.isCaptchaPage()) return true;
+    // Check for turnstile success response
+    const responseInput = document.querySelector('input[name="cf-turnstile-response"]');
+    return !!(responseInput && responseInput.value);
+  }
+
+  /**
+   * Wait for a blocked page to resolve (CAPTCHA solved or redirect happens)
+   * @static
+   * @param {number} [timeout=120000] - Maximum time to wait in ms
+   * @returns {Promise<boolean>} True if page became ready
+   */
+  static waitForPageReady(timeout = RULE34_CONFIG.PAGE_WAIT_TIMEOUT) {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+      
+      const check = () => {
+        const blocker = this.getBlockerType();
+        if (!blocker) {
+          // Page is no longer blocked - it's ready
+          resolve(true);
+          return;
+        }
+        
+        if (Date.now() - startTime > timeout) {
+          resolve(false);
+          return;
+        }
+        
+        setTimeout(check, RULE34_CONFIG.PAGE_CHECK_INTERVAL);
+      };
+      
+      // Small initial delay to let the page stabilize
+      setTimeout(check, 500);
+    });
+  }
+
+  /**
    * Get site display name
    */
   getSiteName() {
