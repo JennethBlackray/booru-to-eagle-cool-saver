@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Booru to Eagle Saver</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 280px;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 12px;
+      color: #ffffff;
+      background: rgba(20, 20, 35, 0.85);
+      backdrop-filter: blur(24px) saturate(160%);
+      -webkit-backdrop-filter: blur(24px) saturate(160%);
+    }
+
+    /* Swipe container - exactly 2 views side by side, no padding */
+    .swipe-container {
+      display: flex;
+      width: 560px;
+      transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .swipe-container.view-main {
+      transform: translateX(0);
+    }
+
+    .swipe-container.view-settings {
+      transform: translateX(-280px);
+    }
+
+    /* Each view has its own padding */
+    .view {
+      width: 280px;
+      min-width: 280px;
+      flex-shrink: 0;
+      padding: 12px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .header-icon {
+      width: 24px;
+      height: 24px;
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .header h1 {
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.9);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    .back-btn {
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.7);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .back-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+    }
+
+    .status-section {
+      margin-bottom: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 3px 0;
+      font-size: 11px;
+    }
+
+    .status-label {
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    .status-value {
+      color: rgba(255, 255, 255, 0.8);
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 5px;
+      background: #4ade80;
+    }
+
+    .status-dot.offline {
+      background: #f87171;
+      box-shadow: 0 0 6px rgba(248, 113, 113, 0.5);
+    }
+
+    .sites-list {
+      margin-bottom: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .sites-list h3 {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.4);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 5px;
+    }
+
+    .sites-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .site-tag {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 4px;
+      color: rgba(255, 255, 255, 0.7);
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .site-tag:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: rgba(255, 255, 255, 0.9);
+    }
+
+    .actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .btn-primary {
+      background: rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      color: #ffffff;
+    }
+
+    .btn-primary:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #ffffff;
+    }
+
+    /* Settings view */
+    .settings-section {
+      margin-bottom: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .settings-section h3 {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.4);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .hotkey-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .hotkey-item:last-child {
+      border-bottom: none;
+    }
+
+    .hotkey-label {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .hotkey-input {
+      width: 90px;
+      padding: 4px 6px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      color: rgba(255, 255, 255, 0.8);
+      font-size: 10px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      text-align: center;
+      outline: none;
+      transition: all 0.15s ease;
+    }
+
+    .hotkey-input:focus {
+      border-color: rgba(74, 222, 128, 0.5);
+      background: rgba(74, 222, 128, 0.08);
+      box-shadow: 0 0 8px rgba(74, 222, 128, 0.15);
+    }
+
+    .hotkey-input.recording {
+      border-color: rgba(251, 191, 36, 0.5);
+      background: rgba(251, 191, 36, 0.08);
+      color: rgba(251, 191, 36, 0.9);
+    }
+
+    .footer {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      text-align: center;
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.35);
+    }
+
+    /* Collapsible Advanced Settings */
+    .settings-section.collapsible {
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      user-select: none;
+    }
+
+    .section-header:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .section-header h3 {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.4);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 0;
+    }
+
+    .collapse-arrow {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.4);
+      transition: transform 0.25s ease;
+      display: inline-block;
+    }
+
+    .collapse-arrow.expanded {
+      transform: rotate(180deg);
+    }
+
+    .section-content {
+      overflow: hidden;
+      transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.2s ease;
+      opacity: 0;
+      padding: 0 10px;
+    }
+
+    .section-content.expanded {
+      max-height: 200px;
+      padding: 0 10px 8px 10px;
+      opacity: 1;
+    }
+
+    .section-content.collapsed {
+      max-height: 0;
+      padding: 0 10px;
+    }
+
+    /* Setting Item */
+    .setting-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+    }
+
+    .setting-label {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .setting-title {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.8);
+      font-weight: 500;
+    }
+
+    .setting-desc {
+      font-size: 9px;
+      color: rgba(255, 255, 255, 0.35);
+    }
+
+    /* Toggle Switch (iOS style) */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(255, 255, 255, 0.15);
+      transition: all 0.25s ease;
+      border-radius: 22px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 2px;
+      bottom: 2px;
+      background-color: #ffffff;
+      transition: all 0.25s ease;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    .switch input:checked + .slider {
+      background-color: rgba(74, 222, 128, 0.6);
+    }
+
+    .switch input:checked + .slider:before {
+      transform: translateX(18px);
+    }
+
+    .slider:active:before {
+      width: 22px;
+    }
+  </style>
+</head>
+<body>
+  <div class="swipe-container view-main" id="swipe-container">
+    <!-- Main View -->
+    <div class="view" id="view-main">
+      <div class="header">
+        <div class="header-left">
+          <div class="header-icon">🦅</div>
+          <h1>Eagle Saver</h1>
+        </div>
+      </div>
+
+      <div class="status-section">
+        <div class="status-item">
+          <span class="status-label">Eagle</span>
+          <span class="status-value">
+            <span class="status-dot" id="eagle-status-dot"></span>
+            <span id="eagle-status-text">Checking...</span>
+          </span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Site</span>
+          <span class="status-value" id="current-site">-</span>
+        </div>
+      </div>
+
+      <div class="sites-list">
+        <h3>Supported Sites</h3>
+        <div class="sites-grid">
+          <a class="site-tag" href="https://danbooru.donmai.us/" target="_blank" rel="noopener">Danbooru</a>
+          <a class="site-tag" href="https://gelbooru.com/" target="_blank" rel="noopener">Gelbooru</a>
+          <a class="site-tag" href="https://konachan.com/" target="_blank" rel="noopener">Konachan</a>
+          <a class="site-tag" href="https://rule34.xxx/" target="_blank" rel="noopener">Rule34.xxx</a>
+          <a class="site-tag" href="https://chan.sankakucomplex.com/" target="_blank" rel="noopener">chan.Sankaku</a>
+          <a class="site-tag" href="https://yande.re/" target="_blank" rel="noopener">Yande.re</a>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="btn-check-eagle">
+          <span>🔄</span> Check
+        </button>
+        <button class="btn btn-secondary" id="btn-settings">
+          <span>⚙️</span> Settings
+        </button>
+      </div>
+
+      <div class="footer">
+        <p>Booru to Eagle Saver v1.0.0</p>
+      </div>
+    </div>
+
+    <!-- Settings View -->
+    <div class="view" id="view-settings">
+      <div class="header">
+        <div class="header-left">
+          <button class="back-btn" id="btn-back">←</button>
+          <h1>Settings</h1>
+        </div>
+      </div>
+
+      <!-- Hotkeys Section -->
+      <div class="settings-section" id="section-hotkeys">
+        <h3>Hotkeys</h3>
+        <div class="hotkey-item">
+          <span class="hotkey-label">Save</span>
+          <input class="hotkey-input" type="text" id="hotkey-save" value="Alt+Z" readonly>
+        </div>
+        <div class="hotkey-item">
+          <span class="hotkey-label">Set Parent</span>
+          <input class="hotkey-input" type="text" id="hotkey-parent" value="Alt+X" readonly>
+        </div>
+        <div class="hotkey-item">
+          <span class="hotkey-label">Stop</span>
+          <input class="hotkey-input" type="text" id="hotkey-stop" value="Alt+C" readonly>
+        </div>
+        <div class="hotkey-item">
+          <span class="hotkey-label">Post-Save Auto-Close</span>
+          <input class="hotkey-input" type="text" id="hotkey-postsave" value="Alt+A" readonly>
+        </div>
+      </div>
+
+      <!-- Advanced Settings (Collapsible) -->
+      <div class="settings-section collapsible" id="section-advanced">
+        <div class="section-header" id="btn-advanced-toggle">
+          <h3>Advanced</h3>
+          <span class="collapse-arrow" id="collapse-arrow">▼</span>
+        </div>
+        <div class="section-content collapsed" id="advanced-content">
+          <div class="setting-item">
+            <div class="setting-label">
+              <span class="setting-title">Parse image notes</span>
+              <span class="setting-desc">Post notes → Eagle notes</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-parse-notes">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label">
+              <span class="setting-title">Yande.re fix</span>
+              <span class="setting-desc">Without login shows hidden by default r18+ posts</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-yandere-fix">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <p>Click a hotkey to rebind</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
