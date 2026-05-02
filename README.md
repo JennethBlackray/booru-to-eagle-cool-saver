@@ -82,41 +82,6 @@ Clears the save queue and aborts any in-progress downloads. Flash animation sync
 | `Alt+C` | Stop (clear queue) |
 | `Alt+A` | Toggle Post-Save auto-close |
 
-## Project Structure
-
-```
-extension/
-├── manifest.json           # Extension configuration (MV3)
-├── config.js               # Centralized configuration
-├── README.md               # This file
-├── ARCHITECTURE.md         # AI-facing architecture docs
-├── icons/
-│   ├── icon16.png
-│   ├── icon48.png
-│   └── icon128.png
-├── content/
-│   ├── panel.js            # Floating panel UI module
-│   ├── panel.css           # Panel styles (glassmorphism)
-│   ├── main.js             # Entry point for content scripts
-│   ├── main-page-buttons.js # Thumbnail save buttons on main/search pages
-│   ├── site-configs.js     # Site configurations for thumbnail buttons
-│   ├── thumb-button-config.js # Centralized button styles
-│   └── parsers/
-│       ├── base-parser.js       # Base parser interface
-│       ├── parser-registry.js   # Registry for managing site parsers
-│       ├── danbooru-parser.js
-│       ├── gelbooru-parser.js
-│       ├── konachan-parser.js
-│       ├── rule34-parser.js
-│       ├── sankaku-parser.js
-│       └── yandere-parser.js
-├── background/
-│   └── service-worker.js   # Download queue, Eagle API, messaging, hidden tabs
-└── popup/
-    ├── popup.html
-    └── popup.js
-```
-
 ## Eagle API
 
 This extension uses the Eagle Plugin API:
