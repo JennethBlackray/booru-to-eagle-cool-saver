@@ -1014,6 +1014,17 @@ async function _parseHiddenTabInBackground(taskId, postId, hostname, sourceTabId
         throw new Error('Content script did not initialize');
       }
 
+      // CRITICAL: Verify the correct post URL loaded before parsing
+      // Prevents race condition where Chrome reuses a hidden tab
+      // and the old content script parses the wrong post
+      const correctUrl = await waitForCorrectUrl(hiddenTabId, postId, hostname, 15000);
+      if (!correctUrl) {
+        log(`WARNING: Wrong URL detected for post ${postId}, current tab URL does not match`);
+        // If wrong URL, close and retry with a new tab
+        throw new Error(`Tab URL does not match post ${postId}`);
+      }
+      log(`Correct post URL confirmed for post ${postId}`);
+
       // Request parse - this also checks for blocked pages
       const parseResult = await chrome.tabs.sendMessage(hiddenTabId, {
         action: 'parseForMainPageSave',
@@ -1153,6 +1164,44 @@ async function _parseHiddenTabInBackground(taskId, postId, hostname, sourceTabId
       return;
     }
   }
+}
+
+/**
+ * Wait for the hidden tab to load the correct post URL
+ * Prevents race condition where Chrome reuses a hidden tab
+ * and the old content script responds before the new page loads
+ * @param {number} tabId - Hidden tab ID
+ * @param {string} expectedPostId - The post ID we expect to find in the URL
+ * @param {string} hostname - Site hostname for URL matching
+ * @param {number} [timeout=15000] - Max wait time in ms
+ * @returns {Promise<boolean>} True if correct URL loaded
+ */
+async function waitForCorrectUrl(tabId, expectedPostId, hostname, timeout = 15000) {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.pendingUrl && tab.pendingUrl.includes(expectedPostId)) {
+        return true; // Navigation to correct URL is pending
+      }
+      if (tab.url) {
+        if (tab.url.includes(expectedPostId)) {
+          return true; // Correct URL loaded
+        }
+        // URL changed but doesn't contain our postId yet - keep waiting
+        if (tab.url.includes(hostname) || tab.url === 'about:blank') {
+          // Still navigating, wait more
+        } else {
+          // Wrong URL entirely - might be a redirect issue
+          return false;
+        }
+      }
+    } catch (e) {
+      // Tab might not exist yet
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  return false;
 }
 
 function waitForContentScript(tabId, timeout = 15000) {

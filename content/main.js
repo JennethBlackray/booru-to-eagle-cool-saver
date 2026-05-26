@@ -110,27 +110,57 @@
   }
 
   /**
-   * Wait for non-critical elements (tags) in the background
-   * Does not block the main flow - updates panel when tags become available
+   * Wait for non-critical elements (tags, dimensions) in the background
+   * Does not block the main flow - updates panel when data becomes available
+   *
+   * For Sankaku: waits for tag sidebar AND image dimensions (orig_width/orig_height)
+   * - Tags appear when #tag-sidebar is loaded
+   * - Dimensions appear when #image gets orig_width/orig_height attributes
+   * Both typically arrive together from the same Sankaku API response
+   *
    * @param {BaseParser} parser - The site parser
    * @param {BooruEaglePanel} panel - The panel instance
    */
   async function waitForTagsInBackground(parser, panel) {
     try {
+      // Wait for tag sidebar to appear
       const tagSidebar = await SankakuParser.waitForElement(
         SANKAKU_SELECTORS.TAG_SIDEBAR,
         TIMEOUTS.ELEMENT_WAIT
       );
 
-      if (tagSidebar && currentParsedData) {
-        // Re-parse to get tags now that sidebar is loaded
-        const updatedData = await parser.parse();
-        if (updatedData && updatedData.tags && updatedData.tags.length > 0) {
+      if (!tagSidebar || !currentParsedData) return;
+
+      // Also wait for image dimensions to be available (orig_width/orig_height on #image)
+      // Sankaku sets these attributes dynamically after loading post metadata
+      const imageWithDims = await SankakuParser.waitForElement(
+        `${SANKAKU_SELECTORS.IMAGE}[orig_width][orig_height]`,
+        TIMEOUTS.ELEMENT_WAIT
+      );
+
+      // Re-parse to get all data now that tags and dimensions are loaded
+      const updatedData = await parser.parse();
+      if (updatedData) {
+        const panelUpdate = {};
+
+        // Update tags if we got any
+        if (updatedData.tags && updatedData.tags.length > 0) {
           currentParsedData.tags = updatedData.tags;
-          panel.updateData({
-            tags: updatedData.tags
-          });
-          console.log(`[BooruEagle] Tags updated: ${updatedData.tags.length} tags`);
+          panelUpdate.tags = updatedData.tags;
+        }
+
+        // Update dimensions if we now have them (were 0x0 before)
+        if (updatedData.dimensions &&
+            (updatedData.dimensions.width > 0 || updatedData.dimensions.height > 0) &&
+            (!currentParsedData.dimensions ||
+             (currentParsedData.dimensions.width === 0 && currentParsedData.dimensions.height === 0))) {
+          currentParsedData.dimensions = updatedData.dimensions;
+          panelUpdate.dimensions = updatedData.dimensions;
+        }
+
+        if (Object.keys(panelUpdate).length > 0) {
+          panel.updateData(panelUpdate);
+          console.log(`[BooruEagle] Background data updated: ${JSON.stringify(panelUpdate)}`);
         }
       }
     } catch (e) {
@@ -889,11 +919,12 @@
    * @param {boolean} [options.waitForElements=false] - Whether to wait for elements (Sankaku)
    */
   async function parsePage(parser, panel, options = {}) {
-    const { waitForElements = false } = options;
-    console.log('[BooruEagle] parsePage called, waitForElements:', waitForElements);
+    const { waitForElements = false, quickParse = false } = options;
+    console.log('[BooruEagle] parsePage called, waitForElements:', waitForElements, 'quickParse:', quickParse);
 
     const data = await ensureParsedData(parser, panel, {
       waitForElements,
+      quickParse,
       elementTimeout: TIMEOUTS.ELEMENT_WAIT
     });
 
