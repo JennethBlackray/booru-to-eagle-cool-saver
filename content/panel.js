@@ -917,14 +917,21 @@ class BooruEaglePanel {
           // Preserve local state that shouldn't be overwritten by broadcasts from other tabs:
           // - setParent/lockedParentId: controlled by storage and setParent messages
           // - postId: local to each tab, main pages have null postId which would overwrite post pages
+          // - tags, imageUrl, dimensions: post-specific data, must never leak between tabs
           const localSetParentEnabled = this.state.setParentEnabled;
           const localLockedParentId = this.state.lockedParentId;
           const localPostId = this.state.postId;
+          const localTags = this.state.tags;
+          const localImageUrl = this.state.imageUrl;
+          const localDimensions = this.state.dimensions;
 
           this.state = { ...this.state, ...message.data };
           this.state.setParentEnabled = localSetParentEnabled;
           this.state.lockedParentId = localLockedParentId;
           this.state.postId = localPostId;
+          this.state.tags = localTags;
+          this.state.imageUrl = localImageUrl;
+          this.state.dimensions = localDimensions;
 
           this.updatePostIdDisplay();
         }

@@ -1,7 +1,7 @@
 # Architecture Documentation
 
 > Booru to Eagle Saver extension architecture.
-> **Last updated:** May 2026
+> **Last updated:** July 2026
 
 ## Project Structure
 

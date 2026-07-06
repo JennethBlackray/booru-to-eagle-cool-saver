@@ -471,13 +471,20 @@ class DownloadSaveQueue {
       reportDownloadProgress(90, 'Saving to Eagle...', task.taskId, 1);
       
       let result;
-      if (task.useUrlDirect) {
-        // Gelbooru: send URL directly to Eagle (no CORS issues for desktop app)
-        console.log(`[Queue] ${task.taskId} saving via URL direct`);
-        result = await saveToEagleURL({ ...task.saveData, url: task.url });
-      } else {
-        // Standard: save base64
-        result = await saveToEagleBase64({ ...task.saveData, base64: task.base64 });
+      try {
+        if (task.useUrlDirect) {
+          // Gelbooru: send URL directly to Eagle (no CORS issues for desktop app)
+          console.log(`[Queue] ${task.taskId} saving via URL direct`);
+          result = await saveToEagleURL({ ...task.saveData, url: task.url });
+        } else {
+          // Standard: save base64
+          result = await saveToEagleBase64({ ...task.saveData, base64: task.base64 });
+        }
+      } catch (saveError) {
+        // Safety net: catch any unexpected errors during save (should not happen
+        // now that save functions are safe, but protects against runtime weirdness)
+        console.error(`[Queue] Unexpected save error for ${task.taskId}:`, saveError);
+        result = { success: false, error: saveError.message || 'Unknown save error' };
       }
       
       // Report 100% on success
@@ -505,6 +512,8 @@ class DownloadSaveQueue {
 
     // Double check for any tasks that might have been added while processing the last one
     if (this.tasks.length > 0) {
+      // CRITICAL: Keep processing=true to prevent race condition with enqueue()
+      // (enqueue -> _ensureProcessing checks this.processing -> skips if true)
       return this._processSaveQueue();
     }
 
@@ -805,21 +814,26 @@ async function saveToEagleURL(data) {
 
   console.log(`[Eagle] Saving URL: ${url}`);
 
-  const response = await fetch(`${EAGLE_API_URL}/api/item/addFromURL`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(60000)
-  });
+  try {
+    const response = await fetch(`${EAGLE_API_URL}/api/item/addFromURL`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(60000)
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`HTTP ${response.status}: ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { success: false, error: `HTTP ${response.status}: ${errorText}` };
+    }
+
+    const result = await response.json();
+    console.log('[Eagle] URL save successful');
+    return { success: true, data: result };
+  } catch (error) {
+    console.error('[Eagle] URL save failed:', error.message);
+    return { success: false, error: error.name === 'TimeoutError' ? 'Eagle request timed out' : error.message };
   }
-
-  const result = await response.json();
-  console.log('[Eagle] URL save successful');
-  return { success: true, data: result };
 }
 
 async function saveToEagleBase64(data) {
@@ -839,21 +853,26 @@ async function saveToEagleBase64(data) {
 
   console.log(`[Eagle] Saving ${base64.length} bytes...`);
 
-  const response = await fetch(`${EAGLE_API_URL}/api/item/addFromURL`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(60000)
-  });
+  try {
+    const response = await fetch(`${EAGLE_API_URL}/api/item/addFromURL`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(60000)
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`HTTP ${response.status}: ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { success: false, error: `HTTP ${response.status}: ${errorText}` };
+    }
+
+    const result = await response.json();
+    console.log('[Eagle] Save successful');
+    return { success: true, data: result };
+  } catch (error) {
+    console.error('[Eagle] Save failed:', error.message);
+    return { success: false, error: error.name === 'TimeoutError' ? 'Eagle request timed out' : error.message };
   }
-
-  const result = await response.json();
-  console.log('[Eagle] Save successful');
-  return { success: true, data: result };
 }
 
 async function checkEagle() {
