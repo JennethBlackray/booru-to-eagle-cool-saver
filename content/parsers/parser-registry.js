@@ -63,6 +63,12 @@ const PARSERS = [
   {
     factory: () => new YandeReParser(),
     enabled: true
+  },
+  
+  // Rule34Video
+  {
+    factory: () => new Rule34VideoParser(),
+    enabled: true
   }
   
   // ============================================

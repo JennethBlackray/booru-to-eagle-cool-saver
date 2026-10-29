@@ -17,6 +17,7 @@
  * @property {(el: HTMLElement) => string|null} idExtractor - Function to extract post ID from element
  * @property {(postId: string) => string} postPageUrl - Function to build post page URL
  * @property {string} observerTarget - CSS selector for the element to observe for new thumbnails
+ * @property {boolean} [hashThumbsInPage] - Fetch thumbnails for pHash from the page context instead of the background worker
  */
 
 /**
@@ -62,7 +63,10 @@ const SITE_CONFIGS = {
       return el.dataset.id || null;
     },
     postPageUrl: (postId) => `/posts/${postId}`,
-    observerTarget: '#posts-container'
+    observerTarget: '#posts-container',
+    // cdn.donmai.us is Cloudflare-protected: background fetches get a 403 challenge,
+    // so thumbnails are fetched for pHash from the page context (CORS granted by a DNR session rule)
+    hashThumbsInPage: true
   },
 
   'konachan.com': {
@@ -114,6 +118,23 @@ const SITE_CONFIGS = {
     },
     postPageUrl: (postId) => `/post/show/${postId}`,
     observerTarget: '#post-list-posts'
+  },
+
+  'rule34video.com': {
+    name: 'Rule34Video',
+    thumbSelectors: ['.item.thumb[data-video-card-id]', '.item[data-video-card-id]', '.video-card[data-video-card-id]'],
+    thumbContainerSelector: '.wrap_image, .img.wrap_image',
+    idExtractor: (el) => {
+      if (el.dataset?.videoCardId) return el.dataset.videoCardId;
+      const link = el.querySelector('a[href*="/video/"]');
+      if (link) {
+        const match = link.href.match(/\/video\/(\d+)/);
+        if (match) return match[1];
+      }
+      return null;
+    },
+    postPageUrl: (postId) => `/video/${postId}/video/`,
+    observerTarget: '#custom_list_videos_most_recent_videos_items, .list-videos, .thumbs, #content, body'
   }
 };
 
@@ -133,6 +154,39 @@ function findSiteConfig() {
   return null;
 }
 
+/**
+ * Map a hostname or site name to a normalized short key used in collected post keys
+ * @param {string} hostOrSite
+ * @returns {string|null}
+ */
+function getSiteShortKey(hostOrSite) {
+  if (!hostOrSite) return null;
+  const s = String(hostOrSite).toLowerCase();
+  if (s.includes('donmai') || s.includes('danbooru')) return 'danbooru';
+  if (s.includes('gelbooru')) return 'gelbooru';
+  if (s.includes('rule34video')) return 'rule34video';
+  if (s.includes('rule34')) return 'rule34';
+  if (s.includes('sankaku')) return 'sankaku';
+  if (s.includes('konachan')) return 'konachan';
+  if (s.includes('yande.re') || s.includes('yandere')) return 'yandere';
+  return null;
+}
+
+/**
+ * Build a normalized post key (e.g. "rule34:18983120", "danbooru:11835852")
+ * @param {string} hostOrSite
+ * @param {string|number} postId
+ * @returns {string|null}
+ */
+function buildPostKey(hostOrSite, postId) {
+  if (!postId) return null;
+  const siteKey = getSiteShortKey(hostOrSite);
+  if (!siteKey) return null;
+  return `${siteKey}:${String(postId).trim()}`;
+}
+
 // Export for use in other modules
 window.SITE_CONFIGS = SITE_CONFIGS;
 window.findSiteConfig = findSiteConfig;
+window.getSiteShortKey = getSiteShortKey;
+window.buildPostKey = buildPostKey;

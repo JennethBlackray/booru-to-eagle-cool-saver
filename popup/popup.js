@@ -50,9 +50,14 @@ btnAdvancedToggle.addEventListener('click', () => {
  */
 async function loadAdvancedSettings() {
   const stored = await chrome.storage.local.get('settings');
-  const settings = stored.settings || { parseNotes: true, yandereFix: false }; // Default: ON, OFF
-  toggleParseNotes.checked = settings.parseNotes;
+  const settings = stored.settings || { parseNotes: true, yandereFix: false, fileNameFormat: 'postId' };
+  toggleParseNotes.checked = settings.parseNotes !== false;
   toggleYandereFix.checked = !!settings.yandereFix;
+
+  const currentFormat = settings.fileNameFormat || 'postId';
+  document.querySelectorAll('#naming-format-control .segment-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.value === currentFormat);
+  });
   return settings;
 }
 
@@ -84,6 +89,25 @@ toggleYandereFix.addEventListener('change', async () => {
   chrome.runtime.sendMessage({
     action: 'settingsChanged',
     settings: settings
+  });
+});
+
+document.querySelectorAll('#naming-format-control .segment-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const val = btn.dataset.value;
+    document.querySelectorAll('#naming-format-control .segment-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.value === val);
+    });
+
+    const stored = await chrome.storage.local.get('settings');
+    const settings = stored.settings || {};
+    settings.fileNameFormat = val;
+    await saveAdvancedSettings(settings);
+
+    chrome.runtime.sendMessage({
+      action: 'settingsChanged',
+      settings: settings
+    });
   });
 });
 
@@ -124,6 +148,7 @@ async function getCurrentSite() {
       'gelbooru.com': 'Gelbooru',
       'konachan.com': 'Konachan',
       'rule34.xxx': 'Rule34.xxx',
+      'rule34video.com': 'Rule34Video',
       'chan.sankakucomplex.com': 'Sankaku Complex',
       'yande.re': 'Yande.re'
     };
@@ -313,6 +338,14 @@ function sendActionToTab(action) {
 
 async function init() {
   console.log('[BooruEagle Popup] Initializing...');
+
+  try {
+    const manifest = chrome.runtime.getManifest();
+    const versionEl = document.getElementById('footer-version');
+    if (versionEl && manifest && manifest.version) {
+      versionEl.textContent = 'Booru to Eagle Saver v' + manifest.version;
+    }
+  } catch (e) {}
   
   // Check Eagle connection
   const result = await checkEagleConnection();

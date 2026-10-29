@@ -224,6 +224,15 @@ class BaseParser {
   }
 
   /**
+   * Get text annotation / description for Eagle note (e.g., About section on video sites)
+   * Override in site-specific parsers
+   * @returns {string|null}
+   */
+  getAnnotation() {
+    return null;
+  }
+
+  /**
    * Parse all data from the current page
    * @returns {Object|null} Parsed data or null if not on a post page
    */
@@ -238,6 +247,7 @@ class BaseParser {
     const postId = this.getPostId();
     const sourceUrl = this.getSourceUrl();
     const rating = this.getRating();
+    const annotation = this.getAnnotation();
 
     // Build final tags array - add rating tag if found
     const finalTags = [...tags];
@@ -258,8 +268,28 @@ class BaseParser {
       postId,
       sourceUrl,
       rating,
+      annotation: annotation || undefined,
       pageUrl: window.location.href
     };
+  }
+
+  /**
+   * Whether an image URL points to a reduced sample/preview instead of the original.
+   * Parsers fall back to the page's #image / og:image when the original link is missing;
+   * this lets the caller warn instead of silently saving a downscaled copy.
+   * Matches booru conventions: /sample/, /samples/, /preview/ folders and sample_/sample- file names.
+   * @param {string|null} url
+   * @returns {boolean}
+   */
+  static isSampleImageUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    try {
+      const path = new URL(url, window.location.href).pathname;
+      const fileName = path.substring(path.lastIndexOf('/') + 1);
+      return /\/(samples?|preview)\//i.test(path) || /^sample[_-]/i.test(fileName);
+    } catch (e) {
+      return false;
+    }
   }
 }
 

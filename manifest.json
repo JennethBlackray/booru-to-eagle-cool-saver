@@ -1,31 +1,38 @@
  {
   "manifest_version": 3,
   "name": "Booru to Eagle Saver stable",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Save images from booru sites to Eagle with tags",
   "permissions": [
     "storage",
     "tabs",
     "activeTab",
     "cookies",
-    "alarms"
+    "alarms",
+    "downloads",
+    "declarativeNetRequestWithHostAccess"
   ],
     "host_permissions": [
       "http://localhost:41595/*",
+      "<all_urls>",
+      "*://*.boomio-cdn.com/*",
+      "*://*.origin-videos.com/*",
       "*://*.donmai.us/*",
       "*://*.gelbooru.com/*",
       "*://*.konachan.com/*",
       "*://*.rule34.xxx/*",
+      "*://*.rule34video.com/*",
       "*://*.sankakucomplex.com/*",
       "*://*.yande.re/*"
     ],
     "web_accessible_resources": [{
-      "resources": ["content/panel.css", "content/queue-panel.css"],
+      "resources": ["content/panel.css", "content/queue-panel.css", "content/comparison-card.css"],
       "matches": [
         "*://*.donmai.us/*",
         "*://*.gelbooru.com/*",
         "*://*.konachan.com/*",
         "*://*.rule34.xxx/*",
+        "*://*.rule34video.com/*",
         "*://*.sankakucomplex.com/*",
         "*://*.yande.re/*"
       ]
@@ -37,6 +44,7 @@
         "*://*.sankakucomplex.com/*",
         "*://*.donmai.us/*",
         "*://*.rule34.xxx/*",
+        "*://*.rule34video.com/*",
         "*://*.gelbooru.com/*",
         "*://*.yande.re/*"
       ],
@@ -49,9 +57,12 @@
         "content/parsers/gelbooru-parser.js",
         "content/parsers/konachan-parser.js",
         "content/parsers/rule34-parser.js",
+        "content/parsers/rule34video-parser.js",
         "content/parsers/sankaku-parser.js",
         "content/parsers/yandere-parser.js",
         "content/parsers/parser-registry.js",
+        "content/blockhash.js",
+        "content/comparison-card.js",
         "content/panel.js",
         "content/queue-panel.js",
         "content/main-page-buttons.js",
@@ -60,7 +71,8 @@
       ],
       "css": [
         "content/panel.css",
-        "content/queue-panel.css"
+        "content/queue-panel.css",
+        "content/comparison-card.css"
       ],
       "run_at": "document_idle"
     }

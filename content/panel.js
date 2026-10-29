@@ -57,7 +57,8 @@ class BooruEaglePanel {
        postSaveEnabled: false,
        buttonsEnabled: false,
        postId: null,
-       dimensions: null
+       dimensions: null,
+       isCollected: false
      };
     
     // Saved position from localStorage
@@ -85,25 +86,23 @@ class BooruEaglePanel {
 
   /**
    * Listen for tab visibility changes (when user switches tabs)
-   * Updates post ID from current page when Set Parent is OFF
+   * Updates post ID from current page when Set Parent is OFF and syncs position from storage
    * @private
    */
   _initTabVisibilityListener() {
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && !this.state.setParentEnabled) {
-        // Tab became visible and Set Parent is OFF - update post ID from current page
-        this._updatePostIdFromCurrentPage();
-        this.updatePostIdDisplay();
+    const onActive = () => {
+      if (document.visibilityState === 'visible') {
+        if (!this.state.setParentEnabled) {
+          this._updatePostIdFromCurrentPage();
+          this.updatePostIdDisplay();
+        }
+        this.loadPosition();
       }
-    });
-    
-    // Also listen for focus events for faster response
-    window.addEventListener('focus', () => {
-      if (!this.state.setParentEnabled) {
-        this._updatePostIdFromCurrentPage();
-        this.updatePostIdDisplay();
-      }
-    });
+    };
+    this._onVisibilityChange = onActive;
+    this._onWindowFocus = onActive;
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
+    window.addEventListener('focus', this._onWindowFocus);
   }
 
   /**
@@ -119,6 +118,17 @@ class BooruEaglePanel {
         const message = changes['panel-sync-data'].newValue;
         if (message && message.sourceId !== this._panelId) {
           this.handleSyncMessage(message);
+        }
+      }
+
+      // Handle cross-domain position sync via storage
+      if (changes['panel-position']) {
+        const pos = changes['panel-position'].newValue;
+        if (pos && pos.sourceId !== this._panelId && pos.hasBeenDragged) {
+          this.savedPosition = { x: pos.x, y: pos.y };
+          this.hasBeenDragged = true;
+          this._cachePositionLocally(pos.x, pos.y);
+          this.applyPosition();
         }
       }
       
@@ -167,10 +177,29 @@ class BooruEaglePanel {
   }
 
   /**
+   * Inject panel.css directly into the document head to ensure author-level specificity
+   * @private
+   */
+  _injectCSS() {
+    if (document.getElementById('booru-eagle-panel-styles')) return;
+
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.id = 'booru-eagle-panel-styles';
+    link.href = chrome.runtime.getURL('content/panel.css');
+    (document.head || document.documentElement).appendChild(link);
+  }
+
+  /**
    * Initialize the panel element
    */
   init() {
     try {
+      this._injectCSS();
+
+      // Remove any phantom/cached panels left in DOM by SPA history restoration (e.g. Sankaku Back button)
+      document.querySelectorAll('#booru-eagle-panel').forEach(el => el.remove());
+
       this.panel = document.createElement('div');
       this.panel.id = 'booru-eagle-panel';
       this.panel.innerHTML = this.getPanelHTML();
@@ -246,7 +275,7 @@ class BooruEaglePanel {
 
   /**
    * Setup drag and drop listeners
-   * Uses capture phase to intercept events before site handlers
+   * Uses capture phase and pointer capture to intercept events before site handlers/iframes
    */
   setupDragListeners() {
     const header = this.panel?.querySelector('.panel-header');
@@ -256,8 +285,15 @@ class BooruEaglePanel {
     this._onPointerDown = this._onPointerDown.bind(this);
     this._onPointerMove = this._onPointerMove.bind(this);
     this._onPointerUp = this._onPointerUp.bind(this);
+    this._onPointerCancel = this._onPointerCancel.bind(this);
     
-    // Use capture phase to intercept before site handlers
+    // Pointer Events with pointer capture (reliable across iframes, video players, and window edges)
+    header.addEventListener('pointerdown', this._onPointerDown, true);
+    document.addEventListener('pointermove', this._onPointerMove, true);
+    document.addEventListener('pointerup', this._onPointerUp, true);
+    document.addEventListener('pointercancel', this._onPointerCancel, true);
+
+    // Fallback mouse events
     header.addEventListener('mousedown', this._onPointerDown, true);
     document.addEventListener('mousemove', this._onPointerMove, true);
     document.addEventListener('mouseup', this._onPointerUp, true);
@@ -276,6 +312,12 @@ class BooruEaglePanel {
     const rect = this.panel.getBoundingClientRect();
     this.dragOffset.x = e.clientX - rect.left;
     this.dragOffset.y = e.clientY - rect.top;
+
+    if (e.pointerId && e.currentTarget?.setPointerCapture) {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch (_) {}
+    }
   }
 
   _onPointerMove(e) {
@@ -288,14 +330,16 @@ class BooruEaglePanel {
     const y = e.clientY - this.dragOffset.y;
     
     // Clamp to viewport
-    const w = this.panel.offsetWidth;
-    const h = this.panel.offsetHeight;
+    const w = this.panel.offsetWidth || 240;
+    const h = this.panel.offsetHeight || 115;
     const clampedX = Math.max(0, Math.min(x, window.innerWidth - w));
     const clampedY = Math.max(0, Math.min(y, window.innerHeight - h));
     
     // Use setProperty with 'important' priority to override site styles
     this.panel.style.setProperty('left', clampedX + 'px', 'important');
     this.panel.style.setProperty('top', clampedY + 'px', 'important');
+    this.panel.style.removeProperty('right');
+    this.panel.style.removeProperty('bottom');
   }
 
   _onPointerUp(e) {
@@ -303,16 +347,29 @@ class BooruEaglePanel {
     
     this.isDragging = false;
     this.panel.classList.remove('panel-dragging');
+
+    if (e.pointerId && e.currentTarget?.releasePointerCapture) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+    }
+
     this.savePosition();
     
-    // Broadcast position to other tabs (debounced)
+    // Broadcast position to other tabs immediately
     const rect = this.panel.getBoundingClientRect();
-    this._broadcastDebounced({
+    this.broadcast({
       type: 'position',
       x: Math.round(rect.left),
       y: Math.round(rect.top),
       hasBeenDragged: true
     });
+  }
+
+  _onPointerCancel(e) {
+    if (!this.isDragging) return;
+    this.isDragging = false;
+    this.panel?.classList.remove('panel-dragging');
   }
 
   // ==================== BUTTON HANDLERS ====================
@@ -395,6 +452,27 @@ class BooruEaglePanel {
   close() {
     this.panel?.classList.remove('panel-visible');
     this._cleanupStorageSync();
+    if (this._onPointerMove) {
+      document.removeEventListener('pointermove', this._onPointerMove, true);
+      document.removeEventListener('mousemove', this._onPointerMove, true);
+    }
+    if (this._onPointerUp) {
+      document.removeEventListener('pointerup', this._onPointerUp, true);
+      document.removeEventListener('mouseup', this._onPointerUp, true);
+    }
+    if (this._onPointerCancel) {
+      document.removeEventListener('pointercancel', this._onPointerCancel, true);
+    }
+    if (this._onVisibilityChange) {
+      document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    }
+    if (this._onWindowFocus) {
+      window.removeEventListener('focus', this._onWindowFocus);
+    }
+    if (this._toastTimer) {
+      clearTimeout(this._toastTimer);
+      this._toastTimer = null;
+    }
     this.broadcast({ type: 'close' });
 
     // Remove immediately - no delay
@@ -506,6 +584,39 @@ class BooruEaglePanel {
   }
 
   /**
+   * Set whether the current post is already collected in Eagle
+   * Changes the Save button to purple with "recollect" text or amber with "Upgrade" text
+   * @param {boolean} isCollected
+   * @param {string|null} [customText=null]
+   * @param {boolean} [isUpgrade=false]
+   */
+  setCollectedState(isCollected, customText = null, isUpgrade = false) {
+    this.state.isCollected = !!isCollected;
+    this.state.isUpgrade = !!isUpgrade;
+    this.state.collectedText = customText;
+    const saveBtn = this.panel?.querySelector('#panel-save-btn');
+    if (!saveBtn) return;
+
+    saveBtn.classList.toggle('collected', this.state.isCollected);
+    saveBtn.classList.toggle('upgrade', this.state.isUpgrade);
+
+    const defaultText = this.state.isUpgrade ? 'Upgrade' : (this.state.isCollected ? 'recollect' : 'Save');
+    const targetText = customText || defaultText;
+
+    if (!saveBtn.classList.contains('saving') && !saveBtn.disabled) {
+      const btnText = saveBtn.querySelector('.btn-text');
+      if (btnText) {
+        btnText.textContent = targetText;
+      }
+    } else if (!saveBtn.classList.contains('saving')) {
+      const btnText = saveBtn.querySelector('.btn-text');
+      if (btnText && btnText.textContent !== 'Saving...') {
+        btnText.textContent = targetText;
+      }
+    }
+  }
+
+  /**
    * Reset save button to default state
    */
   resetSaveButton() {
@@ -519,10 +630,12 @@ class BooruEaglePanel {
       progressFill.style.setProperty('--progress', '0%');
     }
     if (btnText) {
-      btnText.textContent = 'Save';
+      btnText.textContent = this.state.collectedText || (this.state.isUpgrade ? 'Upgrade' : (this.state.isCollected ? 'recollect' : 'Save'));
     }
+    saveBtn.classList.toggle('collected', !!this.state.isCollected);
+    saveBtn.classList.toggle('upgrade', !!this.state.isUpgrade);
     saveBtn.classList.remove('saving');
-    saveBtn.disabled = false;
+    saveBtn.disabled = !this.state.buttonsEnabled;
   }
 
   /**
@@ -633,6 +746,7 @@ class BooruEaglePanel {
         // Try extracting from URL directly (before parsing completes)
         const url = window.location.href;
         const patterns = [
+          /\/video[s]?\/([a-zA-Z0-9]+)/i,   // Rule34Video
           /\/post\/show\/([a-zA-Z0-9]+)/i,
           /\/posts\/([a-zA-Z0-9]+)/i,
           /\/post\/view\/([a-zA-Z0-9]+)/i,
@@ -760,34 +874,66 @@ class BooruEaglePanel {
     
     if (!toast) return;
     
+    if (this._toastTimer) {
+      clearTimeout(this._toastTimer);
+    }
+
     toast.textContent = message;
     toast.className = `panel-toast panel-toast-${type} toast-visible`;
     
-    setTimeout(() => {
+    this._toastTimer = setTimeout(() => {
       toast.classList.remove('toast-visible');
+      this._toastTimer = null;
     }, 3000);
   }
 
   // ==================== POSITION PERSISTENCE ====================
 
   /**
-   * Save panel position to localStorage
+   * Cache panel position in localStorage for instant synchronous reads on same domain
+   * @param {number} x
+   * @param {number} y
+   * @private
+   */
+  _cachePositionLocally(x, y) {
+    try {
+      localStorage.setItem('booru-eagle-panel-x', String(Math.round(x)));
+      localStorage.setItem('booru-eagle-panel-y', String(Math.round(y)));
+      localStorage.setItem('booru-eagle-panel-dragged', 'true');
+    } catch (e) {}
+  }
+
+  /**
+   * Save panel position to chrome.storage.local (cross-domain) and localStorage (fast cache)
    */
   savePosition() {
     if (!this.panel) return;
     
     const rect = this.panel.getBoundingClientRect();
+    const x = Math.round(rect.left);
+    const y = Math.round(rect.top);
+    this.savedPosition = { x, y };
+    this.hasBeenDragged = true;
+
+    this._cachePositionLocally(x, y);
+
     try {
-      localStorage.setItem('booru-eagle-panel-x', String(Math.round(rect.left)));
-      localStorage.setItem('booru-eagle-panel-y', String(Math.round(rect.top)));
-      localStorage.setItem('booru-eagle-panel-dragged', 'true');
+      chrome.storage.local.set({
+        'panel-position': {
+          x,
+          y,
+          hasBeenDragged: true,
+          sourceId: this._panelId,
+          timestamp: Date.now()
+        }
+      });
     } catch (e) {
-      console.warn('[BooruEagle Panel] Could not save position:', e);
+      console.warn('[BooruEagle Panel] Could not save position to chrome.storage:', e);
     }
   }
 
   /**
-   * Load panel position from localStorage
+   * Load panel position from localStorage (instant) and chrome.storage.local (cross-domain truth)
    */
   loadPosition() {
     try {
@@ -803,7 +949,22 @@ class BooruEaglePanel {
         this.hasBeenDragged = dragged === 'true';
       }
     } catch (e) {
-      console.warn('[BooruEagle Panel] Could not load position:', e);
+      console.warn('[BooruEagle Panel] Could not load position from localStorage:', e);
+    }
+
+    // Also load cross-domain position from chrome.storage.local
+    try {
+      chrome.storage.local.get('panel-position', (result) => {
+        const pos = result?.['panel-position'];
+        if (pos && pos.hasBeenDragged && typeof pos.x === 'number' && typeof pos.y === 'number') {
+          this.savedPosition = { x: pos.x, y: pos.y };
+          this.hasBeenDragged = true;
+          this._cachePositionLocally(pos.x, pos.y);
+          this.applyPosition();
+        }
+      });
+    } catch (e) {
+      console.warn('[BooruEagle Panel] Could not load position from chrome.storage:', e);
     }
   }
 
@@ -814,14 +975,20 @@ class BooruEaglePanel {
     if (!this.panel) return;
     
     if (this.savedPosition && this.hasBeenDragged) {
-      const x = Math.max(0, Math.min(this.savedPosition.x, window.innerWidth - 220));
-      const y = Math.max(0, Math.min(this.savedPosition.y, window.innerHeight - 100));
+      const w = this.panel.offsetWidth || 240;
+      const h = this.panel.offsetHeight || 115;
+      const vw = window.innerWidth || 1920;
+      const vh = window.innerHeight || 1080;
+      const x = Math.max(0, Math.min(this.savedPosition.x, vw - w));
+      const y = Math.max(0, Math.min(this.savedPosition.y, vh - h));
       
       // Use setProperty with 'important' priority to override site styles
       this.panel.style.setProperty('left', x + 'px', 'important');
       this.panel.style.setProperty('top', y + 'px', 'important');
+      this.panel.style.removeProperty('right');
+      this.panel.style.removeProperty('bottom');
     }
-    // Otherwise CSS default (calc(50% - 110px))
+    // Otherwise CSS default (calc(50% - 120px))
   }
 
   // ==================== CROSS-TAB SYNC ====================
@@ -906,9 +1073,9 @@ class BooruEaglePanel {
       case 'position':
         if (message.hasBeenDragged) {
           this.hasBeenDragged = true;
-          // Use setProperty with 'important' priority to override site styles
-          this.panel.style.setProperty('left', message.x + 'px', 'important');
-          this.panel.style.setProperty('top', message.y + 'px', 'important');
+          this.savedPosition = { x: message.x, y: message.y };
+          this._cachePositionLocally(message.x, message.y);
+          this.applyPosition();
         }
         break;
         
@@ -916,7 +1083,7 @@ class BooruEaglePanel {
         if (message.data) {
           // Preserve local state that shouldn't be overwritten by broadcasts from other tabs:
           // - setParent/lockedParentId: controlled by storage and setParent messages
-          // - postId: local to each tab, main pages have null postId which would overwrite post pages
+          // - postId, site, status, statusMessage, buttonsEnabled: local to each tab
           // - tags, imageUrl, dimensions: post-specific data, must never leak between tabs
           const localSetParentEnabled = this.state.setParentEnabled;
           const localLockedParentId = this.state.lockedParentId;
@@ -924,6 +1091,11 @@ class BooruEaglePanel {
           const localTags = this.state.tags;
           const localImageUrl = this.state.imageUrl;
           const localDimensions = this.state.dimensions;
+          const localSite = this.state.site;
+          const localStatus = this.state.status;
+          const localStatusMessage = this.state.statusMessage;
+          const localButtonsEnabled = this.state.buttonsEnabled;
+          const localIsCollected = this.state.isCollected;
 
           this.state = { ...this.state, ...message.data };
           this.state.setParentEnabled = localSetParentEnabled;
@@ -932,6 +1104,11 @@ class BooruEaglePanel {
           this.state.tags = localTags;
           this.state.imageUrl = localImageUrl;
           this.state.dimensions = localDimensions;
+          this.state.site = localSite;
+          this.state.status = localStatus;
+          this.state.statusMessage = localStatusMessage;
+          this.state.buttonsEnabled = localButtonsEnabled;
+          this.state.isCollected = localIsCollected;
 
           this.updatePostIdDisplay();
         }
@@ -1046,6 +1223,7 @@ class BooruEaglePanel {
     // Try common patterns: /post/show/12345, /posts/12345, ?id=12345
     // Note: Sankaku uses alphanumeric IDs (e.g., abc123def), so we use [a-zA-Z0-9]+
     const patterns = [
+      /\/video[s]?\/([a-zA-Z0-9]+)/i,       // Rule34Video
       /\/post\/show\/([a-zA-Z0-9]+)/i,      // Gelbooru, Konachan
       /\/posts\/([a-zA-Z0-9]+)/i,           // Danbooru
       /\/en\/posts\/([a-zA-Z0-9]+)/i,       // Sankaku
@@ -1123,10 +1301,9 @@ class BooruEaglePanel {
       if (result['post-save-enabled'] !== undefined) {
         this.state.postSaveEnabled = result['post-save-enabled'];
         
-        // Apply to UI after panel is created
-        setTimeout(() => {
+        if (this.panel) {
           this.updateToggleButton('#panel-post-save-btn', this.state.postSaveEnabled);
-        }, 200);
+        }
       }
     } catch (e) {
       console.warn('[BooruEagle Panel] Could not load post-save state:', e);

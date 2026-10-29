@@ -31,18 +31,64 @@ const THUMB_BUTTON_CONFIG = {
   tooltipSaving: 'Parsing...',
   tooltipSuccess: 'Saved!',
   tooltipError: 'Error: ',
+  collectedBadgeClass: 'booru-eagle-collected-badge',
   
   css: `
+    /* Always-visible compact pill badge at top-right of thumbnail */
+    .booru-eagle-collected-badge {
+      position: absolute !important;
+      top: 4px !important;
+      right: 4px !important;
+      left: auto !important;
+      bottom: auto !important;
+      z-index: 101 !important;
+      box-sizing: border-box !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      height: 18px !important;
+      max-height: 18px !important;
+      min-width: 24px !important;
+      max-width: calc(100% - 8px) !important;
+      padding: 0 6px !important;
+      margin: 0 !important;
+      border-radius: 9px !important;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.95), rgba(109, 40, 217, 0.95)) !important;
+      border: 1px solid rgba(216, 180, 254, 0.45) !important;
+      color: #ffffff !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+      font-size: 9px !important;
+      font-weight: 700 !important;
+      line-height: 18px !important;
+      letter-spacing: 0.3px !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4) !important;
+      backdrop-filter: blur(4px) !important;
+      -webkit-backdrop-filter: blur(4px) !important;
+      pointer-events: auto !important;
+      cursor: pointer !important;
+      user-select: none !important;
+      text-transform: lowercase !important;
+      vertical-align: top !important;
+    }
+
     /* Container for save buttons under each thumbnail */
     .booru-eagle-thumb-btn-container {
-      position: absolute;
-      bottom: 4px;
-      right: 4px;
-      z-index: 100;
-      display: flex;
-      gap: 4px;
+      position: absolute !important;
+      bottom: 4px !important;
+      right: 4px !important;
+      left: auto !important;
+      top: auto !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      z-index: 100 !important;
+      display: flex !important;
+      gap: 4px !important;
       opacity: 0;
       transition: opacity 0.2s ease;
+      pointer-events: auto !important;
     }
 
     /* Show on hover */
@@ -50,8 +96,17 @@ const THUMB_BUTTON_CONFIG = {
     .post-preview-container:hover .booru-eagle-thumb-btn-container,
     article:hover .booru-eagle-thumb-btn-container,
     span.thumb:hover .booru-eagle-thumb-btn-container,
-    li:hover .booru-eagle-thumb-btn-container {
+    li:hover .booru-eagle-thumb-btn-container,
+    a:hover .booru-eagle-thumb-btn-container,
+    .item:hover .booru-eagle-thumb-btn-container,
+    .wrap_image:hover .booru-eagle-thumb-btn-container {
       opacity: 1;
+    }
+
+    /* Prevent thumbnail container baseline shifts on inline-block booru layouts */
+    span.thumb,
+    ul#post-list-posts li {
+      vertical-align: top !important;
     }
 
     /* Main button */
@@ -123,30 +178,32 @@ const THUMB_BUTTON_CONFIG = {
       50% { opacity: 0.6; }
     }
 
-    /* Tooltip */
-    .booru-eagle-thumb-btn::after {
-      content: attr(data-tooltip);
-      position: absolute;
-      bottom: calc(100% + 6px);
-      left: 50%;
-      transform: translateX(-50%) scale(0.8);
-      background: rgba(20, 20, 20, 0.9);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      color: #fff;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      white-space: nowrap;
+    /* Global Floating Tooltip (never clipped by thumbnail overflow) */
+    .booru-eagle-global-tooltip {
+      position: fixed !important;
+      z-index: 2147483647 !important;
+      background: rgba(20, 20, 20, 0.92) !important;
+      backdrop-filter: blur(8px) !important;
+      -webkit-backdrop-filter: blur(8px) !important;
+      color: #ffffff !important;
+      padding: 4px 8px !important;
+      border-radius: 6px !important;
+      font-size: 11px !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+      font-weight: 500 !important;
+      line-height: 1.3 !important;
+      white-space: nowrap !important;
+      pointer-events: none !important;
+      border: 1px solid rgba(255, 255, 255, 0.18) !important;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
       opacity: 0;
-      pointer-events: none;
-      transition: all 0.15s ease;
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      transform: scale(0.92);
+      transition: opacity 0.12s ease, transform 0.12s ease;
     }
 
-    .booru-eagle-thumb-btn:hover::after {
-      opacity: 1;
-      transform: translateX(-50%) scale(1);
+    .booru-eagle-global-tooltip.visible {
+      opacity: 1 !important;
+      transform: scale(1) !important;
     }
 
     /* Dark theme adjustments */
@@ -166,12 +223,6 @@ const THUMB_BUTTON_CONFIG = {
     body:not(.dark):not(.style-dark) .booru-eagle-thumb-btn:hover {
       background: rgba(255, 255, 255, 0.9);
       border-color: rgba(0, 0, 0, 0.3);
-    }
-
-    body:not(.dark):not(.style-dark) .booru-eagle-thumb-btn::after {
-      background: rgba(255, 255, 255, 0.9);
-      color: #333;
-      border-color: rgba(0, 0, 0, 0.15);
     }
   `
 };

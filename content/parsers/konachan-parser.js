@@ -248,6 +248,53 @@ class KonachanParser extends BaseParser {
     // Last fallback: base implementation
     return super.getImageDimensions();
   }
+
+  /**
+   * Get notes from the page (image annotations)
+   */
+  getNotes() {
+    if (typeof window.extensionSettings !== 'undefined' && !window.extensionSettings.parseNotes) {
+      return [];
+    }
+
+    const notes = [];
+    const noteBodies = document.querySelectorAll('#note-container .note-body');
+    if (noteBodies.length === 0) return notes;
+
+    noteBodies.forEach(bodyEl => {
+      let text = bodyEl.innerHTML || '';
+      text = text.replace(/<br\s*\/?>/gi, '\n')
+                 .replace(/<[^>]*>?/gm, '')
+                 .replace(/&nbsp;/g, ' ')
+                 .replace(/&#039;/g, "'")
+                 .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+                 .replace(/([&])([lg]t|quot|amp);/g, (m, p, ent) => {
+                   if (ent === 'amp') return '&';
+                   if (ent === 'lt') return '<';
+                   if (ent === 'gt') return '>';
+                   if (ent === 'quot') return '"';
+                   return m;
+                 })
+                 .trim();
+      if (text) notes.push(text);
+    });
+
+    return notes;
+  }
+
+  _formatNotesForEagle(notes) {
+    if (!notes || notes.length === 0) return null;
+    if (notes.length === 1) return notes[0];
+    return notes.map((note, index) => `--- Note ${index + 1} ---\n${note}`).join('\n\n');
+  }
+
+  async parse() {
+    const baseData = super.parse();
+    if (!baseData) return null;
+    const notes = this.getNotes();
+    baseData.annotation = this._formatNotesForEagle(notes);
+    return baseData;
+  }
 }
 
 // Export

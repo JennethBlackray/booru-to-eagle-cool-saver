@@ -103,7 +103,7 @@ const RULE34_CONFIG = {
  */
 const EXTENSION_META = {
   name: 'Booru to Eagle Saver',
-  version: '1.0.0',
+  version: '1.1.0',
   logPrefix: '[BooruEagle]'
 };
 

@@ -383,6 +383,10 @@ class SankakuParser extends BaseParser {
    * Get notes from the page (image annotations)
    */
   getNotes() {
+    if (typeof window.extensionSettings !== 'undefined' && !window.extensionSettings.parseNotes) {
+      return [];
+    }
+
     const notes = [];
     const noteBodies = document.querySelectorAll('#note-container .note-body');
     
@@ -396,16 +400,19 @@ class SankakuParser extends BaseParser {
     noteBodies.forEach(bodyEl => {
       let text = bodyEl.innerHTML;
       
-      // Basic cleanup: <br> to newline, remove other HTML tags
+      // Basic cleanup: <br> to newline, remove other HTML tags, decode entities
       text = text.replace(/<br\s*\/?>/gi, '\n')
                  .replace(/<[^>]*>?/gm, '')
                  .replace(/&nbsp;/g, ' ')
-                 .replace(/&/g, '&')
-                 .replace(/</g, '<')
-                 .replace(/>/g, '>')
-                 .replace(/"/g, '"')
                  .replace(/&#039;/g, "'")
                  .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+                 .replace(/([&])([lg]t|quot|amp);/g, (m, p, ent) => {
+                   if (ent === 'amp') return '&';
+                   if (ent === 'lt') return '<';
+                   if (ent === 'gt') return '>';
+                   if (ent === 'quot') return '"';
+                   return m;
+                 })
                  .trim();
       
       if (text) {

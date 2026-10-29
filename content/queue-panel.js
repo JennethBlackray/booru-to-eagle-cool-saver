@@ -75,6 +75,9 @@ class BooruEagleQueuePanel {
    * @private
    */
   _createDOM() {
+    // Remove any phantom/cached queue panels left in DOM by SPA history restoration
+    document.querySelectorAll('#booru-eagle-queue-panel, .booru-eagle-queue-panel').forEach(el => el.remove());
+
     this.panel = document.createElement('div');
     this.panel.className = 'booru-eagle-queue-panel';
     this.panel.id = 'booru-eagle-queue-panel';

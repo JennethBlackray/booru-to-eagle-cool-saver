@@ -58,7 +58,7 @@
   };
 
   /** @type {Object} Extension settings (global, shared with parsers) */
-  window.extensionSettings = window.extensionSettings || { parseNotes: true };
+  window.extensionSettings = window.extensionSettings || { parseNotes: true, fileNameFormat: 'postId' };
 
   // ==================== UTILITIES ====================
 
@@ -80,6 +80,25 @@
            data !== undefined && 
            typeof data.imageUrl === 'string' && 
            data.imageUrl.length > 0;
+  }
+
+  /**
+   * Extract original filename without extension from an image URL
+   * @param {string} url
+   * @returns {string|null}
+   */
+  function extractOriginalFilename(url) {
+    if (!url || typeof url !== 'string') return null;
+    try {
+      const cleanUrl = url.split('?')[0].split('#')[0].replace(/\/+$/, '');
+      const lastPart = cleanUrl.substring(cleanUrl.lastIndexOf('/') + 1);
+      const decoded = decodeURIComponent(lastPart).trim();
+      if (!decoded) return null;
+      const nameWithoutExt = decoded.replace(/\.[a-zA-Z0-9]{2,5}$/i, '').trim();
+      return nameWithoutExt || null;
+    } catch (e) {
+      return null;
+    }
   }
 
   /**
@@ -123,19 +142,19 @@
    */
   async function waitForTagsInBackground(parser, panel) {
     try {
-      // Wait for tag sidebar to appear
-      const tagSidebar = await SankakuParser.waitForElement(
-        SANKAKU_SELECTORS.TAG_SIDEBAR,
+      // Wait for actual tag links inside #tag-sidebar (Sankaku populates <li> items asynchronously)
+      const tagItem = await SankakuParser.waitForElement(
+        '#tag-sidebar li a.tag-link',
         TIMEOUTS.ELEMENT_WAIT
       );
 
-      if (!tagSidebar || !currentParsedData) return;
+      if (!tagItem || !currentParsedData) return;
 
       // Also wait for image dimensions to be available (orig_width/orig_height on #image)
       // Sankaku sets these attributes dynamically after loading post metadata
-      const imageWithDims = await SankakuParser.waitForElement(
+      await SankakuParser.waitForElement(
         `${SANKAKU_SELECTORS.IMAGE}[orig_width][orig_height]`,
-        TIMEOUTS.ELEMENT_WAIT
+        3000
       );
 
       // Re-parse to get all data now that tags and dimensions are loaded
@@ -147,6 +166,11 @@
         if (updatedData.tags && updatedData.tags.length > 0) {
           currentParsedData.tags = updatedData.tags;
           panelUpdate.tags = updatedData.tags;
+        }
+
+        // Update annotation/notes if available
+        if (updatedData.annotation) {
+          currentParsedData.annotation = updatedData.annotation;
         }
 
         // Update dimensions if we now have them (were 0x0 before)
@@ -201,6 +225,7 @@
           postId: immediateData.postId,
           dimensions: immediateData.dimensions
         });
+        checkCurrentPostCollected(parser, panel, immediateData);
 
         // Load tags in background
         waitForTagsInBackground(parser, panel);
@@ -252,6 +277,7 @@
       postId: data.postId,
       dimensions: data.dimensions
     });
+    checkCurrentPostCollected(parser, panel, data);
 
     // For Sankaku quick parse: start loading tags in background
     if (quickParse && isSankakuSite()) {
@@ -259,6 +285,37 @@
     }
 
     return data;
+  }
+
+  /**
+   * Check whether the current post page is already collected in Eagle (by postKey)
+   * and update the panel Save button ("recollect" in purple vs "Save")
+   * @param {BaseParser} parser
+   * @param {BooruEaglePanel} panel
+   * @param {ParsedData|null} [parsedData=null]
+   */
+  async function checkCurrentPostCollected(parser, panel, parsedData = null) {
+    if (!parser || !panel || !parser.isPostPage()) return;
+
+    try {
+      const postId = parsedData?.postId || (typeof parser.getPostId === 'function' ? parser.getPostId() : null) || panel.state?.postId;
+      const postKey = (postId && typeof buildPostKey === 'function')
+        ? buildPostKey(window.location.hostname, postId)
+        : null;
+
+      if (!postKey) return;
+
+      const response = await chrome.runtime.sendMessage({
+        action: 'checkCollectedSingle',
+        postKey
+      });
+
+      if (panel === currentPanel) {
+        panel.setCollectedState(!!response?.collected);
+      }
+    } catch (e) {
+      // Ignore messaging errors
+    }
   }
 
   /**
@@ -284,21 +341,28 @@
   /** @type {MicroFixes|null} Micro-fixes instance */
   let microFixes = null;
 
+  /** @type {number} Generation counter to prevent concurrent init() calls from creating duplicate panels */
+  let currentInitGeneration = 0;
+
   /**
    * Initialize the extension using the parser registry system
    */
   async function init() {
+    const myGeneration = ++currentInitGeneration;
     console.log('[BooruEagle] Initializing with parser registry...');
 
     // Load extension settings from storage
     try {
       const stored = await chrome.storage.local.get('settings');
+      if (myGeneration !== currentInitGeneration) return;
       if (stored.settings) {
         window.extensionSettings = { ...window.extensionSettings, ...stored.settings };
       }
     } catch (e) {
       console.warn('[BooruEagle] Could not load settings:', e);
     }
+
+    if (myGeneration !== currentInitGeneration) return;
 
     const registry = new ParserRegistry();
     const parser = registry.findParser();
@@ -312,6 +376,12 @@
     console.log('[BooruEagle] Using parser:', parser.getSiteName());
 
     const isPostPage = parser.isPostPage();
+
+    // Ensure any previous panel instance is closed before creating a new one
+    if (currentPanel) {
+      currentPanel.close();
+      currentPanel = null;
+    }
 
     // Create panel
     const panel = new BooruEaglePanel();
@@ -361,6 +431,11 @@
       window._booruEagleStorageListenerRegistered = true;
       chrome.storage.onChanged.addListener((changes, areaName) => {
         if (areaName !== 'local') return;
+        if (changes['collected-cache-timestamp']) {
+          if (currentParser && currentPanel && currentParser.isPostPage()) {
+            checkCurrentPostCollected(currentParser, currentPanel, currentParsedData);
+          }
+        }
         if (!changes['save-progress']) return;
         
         const progressData = changes['save-progress'].newValue;
@@ -389,13 +464,14 @@
             if (progressData.text) {
               btnText.textContent = progressData.text;
             } else if (progressData.progress === 0) {
-              // No text and progress is 0 - reset to default
-              btnText.textContent = 'Save';
+              // No text and progress is 0 - reset to default ("recollect" if collected, else "Save")
+              btnText.textContent = currentPanel.state.isCollected ? 'recollect' : 'Save';
             }
           }
           
           // Add/remove saving class for visual styling
           if (saveBtn) {
+            saveBtn.classList.toggle('collected', !!currentPanel.state.isCollected);
             if (progressData.progress > 0 && progressData.progress < 100) {
               saveBtn.classList.add('saving');
             } else {
@@ -404,31 +480,130 @@
             }
             
             // Re-enable button when progress is 0 (queue cleared or no active download)
-            // Only if the button was previously disabled due to saving
-            if (progressData.progress === 0 && saveBtn.disabled) {
+            // Only if the button should be enabled on this page (post page)
+            if (progressData.progress === 0 && saveBtn.disabled && currentPanel.state.buttonsEnabled) {
               saveBtn.disabled = false;
             }
           }
         }
-        
-      // Clear progress when done (after a short delay for visual feedback)
-      // Only the "source" tab should trigger removal to avoid multiple deletions
-      if (progressData.progress >= 100 && progressData.taskId === currentTaskId) {
-        setTimeout(() => {
-          try {
-            chrome.storage.local.remove('save-progress');
-          } catch (e) {}
-        }, 1500);
-      }
       });
     }
 
-    // Clean up save-progress on tab close to prevent stale entries
-    window.addEventListener('beforeunload', () => {
-      try {
-        chrome.storage.local.remove('save-progress');
-      } catch (e) {}
-    });
+    // Listen for save events from panel (registered ONCE to prevent duplication on SPA navigation)
+    if (!window._booruEagleSaveListenerRegistered) {
+      window._booruEagleSaveListenerRegistered = true;
+      window.addEventListener('booru-eagle-save', async (event) => {
+        const saveData = event.detail;
+        await handleSave(currentParser, currentPanel, saveData);
+      });
+    }
+
+    // Listen for messages from background (save results, hotkey actions, hidden tab)
+    // Registered ONCE BEFORE early return so main pages also receive messages & hotkeys
+    if (!window._booruEagleRuntimeListenerRegistered) {
+      window._booruEagleRuntimeListenerRegistered = true;
+      chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (message.action === 'saveResult') {
+          if (message.taskId?.startsWith('hidden-')) {
+            if (message.success) {
+              console.log('[BooruEagle] Hidden tab save completed successfully');
+              if (currentPanel) {
+                currentPanel.updateStatus('success', 'Saved to Eagle!');
+                if (message.sampleOnly) {
+                  currentPanel.showToast('Saved a reduced sample — original not found on the post page', 'warning');
+                } else {
+                  currentPanel.showToast('Image saved to Eagle successfully!', 'success');
+                }
+
+                if (message.postSaveEnabled) {
+                  console.log('[BooruEagle] Post-Save enabled: closing tab in 1s...');
+                  currentPanel.showToast('Closing tab in 1 second...', 'info');
+
+                  setTimeout(() => {
+                    try {
+                      chrome.runtime.sendMessage({ action: 'closeCurrentTab' });
+                    } catch (e) {
+                      console.warn('[BooruEagle] Could not send closeCurrentTab:', e);
+                    }
+                  }, TIMEOUTS.POST_SAVE_CLOSE);
+                }
+              }
+            } else {
+              console.error('[BooruEagle] Hidden tab save failed:', message.error);
+              if (currentPanel) {
+                currentPanel.updateStatus('error', 'Save failed');
+                currentPanel.showToast(`Save failed: ${message.error || 'Unknown error'}`, 'error');
+              }
+            }
+            if (currentPanel) {
+              currentPanel.resetSaveButton();
+            }
+          } else {
+            handleSaveResult(message);
+          }
+          sendResponse({ ok: true });
+        } else if (message.action === 'hotkeyAction') {
+          if (currentParser && currentPanel) {
+            handleHotkeyAction(message.type, currentParser, currentPanel);
+          }
+          sendResponse({ ok: true });
+        } else if (message.action === 'parseForMainPageSave') {
+          handleParseForMainPageSave(message).then(sendResponse);
+          return true;
+        } else if (message.action === 'pingContentScript') {
+          sendResponse(handlePingContentScript());
+        } else if (message.action === 'hotkeysUpdated') {
+          if (message.hotkeys) {
+            customHotkeys = { ...customHotkeys, ...message.hotkeys };
+            console.log('[BooruEagle] Hotkeys updated:', customHotkeys);
+          }
+          sendResponse({ ok: true });
+        } else if (message.action === 'settingsChanged') {
+          if (message.settings) {
+            window.extensionSettings = { ...window.extensionSettings, ...message.settings };
+            console.log('[BooruEagle] Settings updated:', window.extensionSettings);
+
+            if (microFixes) {
+              microFixes.applyAll(window.extensionSettings);
+            }
+          }
+          sendResponse({ ok: true });
+        } else if (message.action === 'captchaDetected') {
+          console.log('[BooruEagle] CAPTCHA detected on hidden tab:', message.postUrl);
+          if (currentPanel) {
+            currentPanel.showToast('CAPTCHA detected on hidden tab, retrying...', 'warning');
+          }
+          sendResponse({ ok: true });
+        } else if (message.action === 'captchaSolved') {
+          console.log('[BooruEagle] CAPTCHA solved elsewhere, checking this page...');
+          if (typeof Rule34Parser !== 'undefined' && Rule34Parser.getBlockerType()) {
+            if (currentPanel) {
+              currentPanel.updateStatus('info', 'CAPTCHA solved, reloading...');
+              currentPanel.showToast('CAPTCHA solved on another tab! Reloading...', 'success');
+            }
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          }
+          sendResponse({ ok: true });
+          } else if (message.action === 'hiddenTabBlocked') {
+            console.log('[BooruEagle] Hidden tab blocked:', message.blockerType, 'for post', message.postId);
+            if (currentPanel) {
+              if (message.blockerType === 'captcha') {
+                currentPanel.showToast('CAPTCHA blocked. Open rule34 in a tab and solve it.', 'warning');
+              } else {
+                currentPanel.showToast(`Rate limited for post #${message.postId}. Retrying...`, 'warning');
+              }
+            }
+            sendResponse({ ok: true });
+          } else if (message.action === 'collectedItemAdded' || message.action === 'collectedCacheUpdated') {
+            if (currentParser && currentPanel && currentParser.isPostPage()) {
+              checkCurrentPostCollected(currentParser, currentPanel, currentParsedData);
+            }
+            sendResponse({ ok: true });
+          }
+        });
+      }
 
     if (!isPostPage) {
       console.log('[BooruEagle] Not on a post page');
@@ -458,18 +633,15 @@
       }
       
       if (blockerType === 'captcha') {
-        // CAPTCHA page: notify user and wait
-        console.log('[BooruEagle] CAPTCHA detected on post page');
-        panel.updateStatus('warning', 'CAPTCHA blocked - solve in tab');
-        panel.showToast('CAPTCHA detected! Solve it in this tab to continue...', 'warning');
-        
-        // Try to focus this tab so user can solve the CAPTCHA
-        try {
-          chrome.runtime.sendMessage({
-            action: 'focusTab',
-            tabId: null // Current tab
-          });
-        } catch (e) {}
+        // CAPTCHA page: focus this tab so the user can manually click the checkbox
+        console.log('[BooruEagle] CAPTCHA detected on post page — switching to tab for manual solve...');
+        panel.updateStatus('warning', 'CAPTCHA required!');
+        panel.showToast('CAPTCHA detected! Please solve it to continue.', 'warning');
+
+        chrome.runtime.sendMessage({
+          action: 'focusTab',
+          reason: 'captcha'
+        }).catch(() => {});
         
         // Try to bring the panel to attention
         if (panel.panel) {
@@ -493,7 +665,7 @@
             box-shadow: 0 2px 10px rgba(0,0,0,0.3);
           `;
           const postId = parser.getPostId ? parser.getPostId() : 'unknown';
-          banner.textContent = `⚠️ CAPTCHA BLOCKED (post #${postId}): Solve the "I'm not a robot" checkbox on this page to continue saving.`;
+          banner.textContent = `⚠️ CAPTCHA required! Please solve the CAPTCHA below to continue saving (post #${postId})`;
           
           // Add close button
           const closeBtn = document.createElement('button');
@@ -563,6 +735,7 @@
       console.log('[BooruEagle] Sankaku detected - enabling buttons immediately, parsing in background...');
       panel.updateStatus('info', 'Loading...');
       panel.setButtonsEnabled(true);
+      checkCurrentPostCollected(parser, panel);
       
       // Parse in background - don't block UI
       parseInBackground(parser, panel).catch(e => {
@@ -571,128 +744,6 @@
     } else {
       // Other sites: parse normally
       await parsePage(parser, panel);
-    }
-    
-    // Listen for save events from panel (registered ONCE to prevent duplication on SPA navigation)
-    if (!window._booruEagleSaveListenerRegistered) {
-      window._booruEagleSaveListenerRegistered = true;
-      window.addEventListener('booru-eagle-save', async (event) => {
-        const saveData = event.detail;
-        await handleSave(currentParser, currentPanel, saveData);
-      });
-    }
-    
-    // Listen for messages from background (save results, hotkey actions, hidden tab)
-    // Registered ONCE to prevent accumulation on SPA navigation
-    if (!window._booruEagleRuntimeListenerRegistered) {
-      window._booruEagleRuntimeListenerRegistered = true;
-      chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        // Use current variables via closure but ensure we don't handle if destroyed
-        // This is safe because main.js is an IIFE and its state is persistent
-        // until a full page reload or SPA cleanup.
-      if (message.action === 'saveResult') {
-        // Handle both regular saves and hidden tab saves
-        // Hidden tab saves have taskId starting with "hidden-"
-        if (message.taskId?.startsWith('hidden-')) {
-          // Hidden tab save result - handle success/failure
-          if (message.success) {
-            console.log('[BooruEagle] Hidden tab save completed successfully');
-            if (currentPanel) {
-              currentPanel.updateStatus('success', 'Saved to Eagle!');
-              currentPanel.showToast('Image saved to Eagle successfully!', 'success');
-              
-              // Handle post-save close for hidden tab saves
-              // Use per-message postSaveEnabled instead of global flag
-              if (message.postSaveEnabled) {
-                console.log('[BooruEagle] Post-Save enabled: closing tab in 1s...');
-                currentPanel.showToast('Closing tab in 1 second...', 'info');
-                
-                setTimeout(() => {
-                  try {
-                    chrome.runtime.sendMessage({ action: 'closeCurrentTab' });
-                  } catch (e) {
-                    // Extension context may have been invalidated
-                    console.warn('[BooruEagle] Could not send closeCurrentTab:', e);
-                  }
-                }, TIMEOUTS.POST_SAVE_CLOSE);
-              }
-            }
-          } else {
-            console.error('[BooruEagle] Hidden tab save failed:', message.error);
-            if (currentPanel) {
-              currentPanel.updateStatus('error', 'Save failed');
-              currentPanel.showToast(`Save failed: ${message.error || 'Unknown error'}`, 'error');
-            }
-          }
-          if (currentPanel) {
-            currentPanel.resetSaveButton();
-          }
-        } else {
-          handleSaveResult(message);
-        }
-        sendResponse({ ok: true });
-      } else if (message.action === 'hotkeyAction') {
-        handleHotkeyAction(message.type, parser, panel);
-        sendResponse({ ok: true });
-      } else if (message.action === 'parseForMainPageSave') {
-        // Hidden tab requests parse data (async)
-        handleParseForMainPageSave(message).then(sendResponse);
-        return true; // Keep channel open for async response
-      } else if (message.action === 'pingContentScript') {
-        // Background checking if content script is ready
-        sendResponse(handlePingContentScript());
-      } else if (message.action === 'hotkeysUpdated') {
-        // Hotkeys updated in popup
-        if (message.hotkeys) {
-          customHotkeys = { ...customHotkeys, ...message.hotkeys };
-          console.log('[BooruEagle] Hotkeys updated:', customHotkeys);
-        }
-        sendResponse({ ok: true });
-      } else if (message.action === 'settingsChanged') {
-        // Settings changed in popup - update local settings
-        if (message.settings) {
-          window.extensionSettings = { ...window.extensionSettings, ...message.settings };
-          console.log('[BooruEagle] Settings updated:', window.extensionSettings);
-
-          // Re-apply micro-fixes with new settings
-          if (microFixes) {
-            microFixes.applyAll(window.extensionSettings);
-          }
-        }
-        sendResponse({ ok: true });
-      } else if (message.action === 'captchaDetected') {
-        // Background tells us a hidden tab hit a CAPTCHA
-        console.log('[BooruEagle] CAPTCHA detected on hidden tab:', message.postUrl);
-        if (currentPanel) {
-          currentPanel.showToast('CAPTCHA detected on hidden tab, retrying...', 'warning');
-        }
-        sendResponse({ ok: true });
-      } else if (message.action === 'captchaSolved') {
-        // CAPTCHA was solved elsewhere - reload this page if it's blocked
-        console.log('[BooruEagle] CAPTCHA solved elsewhere, checking this page...');
-        if (typeof Rule34Parser !== 'undefined' && Rule34Parser.getBlockerType()) {
-          if (currentPanel) {
-            currentPanel.updateStatus('info', 'CAPTCHA solved, reloading...');
-            currentPanel.showToast('CAPTCHA solved on another tab! Reloading...', 'success');
-          }
-          setTimeout(() => {
-            window.location.reload();
-          }, 1500);
-        }
-        sendResponse({ ok: true });
-      } else if (message.action === 'hiddenTabBlocked') {
-        // Background tells us a hidden tab save failed due to blocking
-        console.log('[BooruEagle] Hidden tab blocked:', message.blockerType, 'for post', message.postId);
-        if (currentPanel) {
-          if (message.blockerType === 'captcha') {
-            currentPanel.showToast('CAPTCHA blocked. Open rule34 in a tab and solve it.', 'warning');
-          } else {
-            currentPanel.showToast(`Rate limited for post #${message.postId}. Retrying...`, 'warning');
-          }
-        }
-        sendResponse({ ok: true });
-      }
-    });
     }
 
     // Notify background script
@@ -805,14 +856,14 @@
         }
       }
 
-      // For Sankaku, wait for CRITICAL elements only (page is dynamic)
-      // Tags are NOT needed for the save operation - they're added from parsed data
+      // For Sankaku, wait for CRITICAL elements AND tag links in #tag-sidebar
       if (isSankakuSite()) {
-        console.log('[BooruEagle] Hidden tab: waiting for critical Sankaku elements...');
+        console.log('[BooruEagle] Hidden tab: waiting for Sankaku elements and tags...');
         const elements = await Promise.all([
           SankakuParser.waitForElement(SANKAKU_SELECTORS.HIGHRES, 10000),
           SankakuParser.waitForElement(SANKAKU_SELECTORS.HIDDEN_POST_ID, 10000),
-          SankakuParser.waitForElement(SANKAKU_SELECTORS.IMAGE, 10000)
+          SankakuParser.waitForElement(SANKAKU_SELECTORS.IMAGE, 10000),
+          SankakuParser.waitForElement('#tag-sidebar li a.tag-link', 10000)
         ]);
 
         // Check if critical elements were found
@@ -844,6 +895,11 @@
         postId: data.postId
       });
       
+      const sampleOnly = typeof BaseParser !== 'undefined' && BaseParser.isSampleImageUrl(data.imageUrl);
+      if (sampleOnly) {
+        console.warn('[BooruEagle] Hidden tab: original image link not found, only a sample is available:', data.imageUrl);
+      }
+
       // For gelbooru, try canvas extraction but fall back to URL-only
       let base64Data = null;
       if (window.location.hostname.includes('gelbooru')) {
@@ -858,7 +914,7 @@
         }
       }
       
-      return { success: true, data, base64: base64Data };
+      return { success: true, data, base64: base64Data, sampleOnly };
     } catch (error) {
       console.error('[BooruEagle] Hidden tab parse error:', error);
       return { success: false, error: error.message };
@@ -869,7 +925,7 @@
    * Handle ping from background (for hidden tab readiness check)
    */
   function handlePingContentScript() {
-    return { pong: true };
+    return { pong: true, url: window.location.href };
   }
 
   /**
@@ -897,8 +953,8 @@
           if (progressData.progress > 0 && progressData.progress < 100) {
             saveBtn.classList.add('saving');
           }
-          // Re-enable button if progress is 0
-          if (progressData.progress === 0 && saveBtn.disabled) {
+          // Re-enable button if progress is 0 and buttons are enabled for this page
+          if (progressData.progress === 0 && saveBtn.disabled && currentPanel.state.buttonsEnabled) {
             saveBtn.disabled = false;
           }
         }
@@ -995,8 +1051,29 @@
       }
     }
     
+    // For Sankaku: if user clicked Save before background tag loading finished, wait for tags now
+    if (isSankakuSite() && (!currentParsedData.tags || currentParsedData.tags.length === 0)) {
+      console.log('[BooruEagle] Sankaku tags not loaded yet, waiting before save...');
+      panel.updateStatus('info', 'Loading tags...');
+      await SankakuParser.waitForElement('#tag-sidebar li a.tag-link', 8000);
+      const refreshedData = await parser.parse();
+      if (refreshedData && refreshedData.tags && refreshedData.tags.length > 0) {
+        currentParsedData.tags = refreshedData.tags;
+        currentParsedData.annotation = refreshedData.annotation;
+        panel.updateData({
+          tags: refreshedData.tags,
+          dimensions: refreshedData.dimensions
+        });
+      }
+    }
+
     const data = currentParsedData;
-    
+
+    if (typeof BaseParser !== 'undefined' && BaseParser.isSampleImageUrl(data.imageUrl)) {
+      console.warn('[BooruEagle] Original image link not found, saving a sample:', data.imageUrl);
+      panel.showToast('Original not found on page — saving the reduced sample', 'warning');
+    }
+
     // Build tags array - add parent tag if Set Parent is enabled
     // Use saveData.tags only if it has items, otherwise fall back to data.tags
     // (empty array [] is truthy, so we must check length explicitly)
@@ -1011,13 +1088,29 @@
     currentTaskId = taskId;
     pendingPostSaveClose = saveData.postSaveEnabled || false;
     
+    // Determine image title based on settings
+    const namingFormat = window.extensionSettings?.fileNameFormat || 'postId';
+    let chosenName = data.postId ? `post_${data.postId}` : undefined;
+    if (namingFormat === 'original' && data.imageUrl) {
+      const origName = extractOriginalFilename(data.imageUrl);
+      if (origName) {
+        chosenName = origName;
+      }
+    }
+
+    // Refresh annotation according to current parseNotes setting
+    let finalAnnotation = undefined;
+    if (window.extensionSettings?.parseNotes !== false) {
+      finalAnnotation = data.annotation || (typeof parser.getAnnotation === 'function' ? parser.getAnnotation() : undefined) || undefined;
+    }
+
     // Build save data for the queue
     const saveDataForQueue = {
       taskId,  // Include taskId for tracking
       tags: finalTags,
-      name: data.postId ? `post_${data.postId}` : undefined,
+      name: chosenName,
       website: data.pageUrl || data.sourceUrl || '',
-      annotation: data.annotation || undefined,  // Pass notes from parser (rule34)
+      annotation: finalAnnotation,  // Pass notes/about from parser (rule34 / rule34video)
       referer: data.pageUrl,
       site: data.site,
       postId: data.postId,
@@ -1107,6 +1200,7 @@
     
     if (success) {
       console.log('[BooruEagle] Save completed successfully');
+      currentPanel?.setCollectedState(true);
       currentPanel?.updateStatus('success', 'Saved to Eagle!');
       currentPanel?.showToast('Image saved to Eagle successfully!', 'success');
       
@@ -1293,11 +1387,78 @@
   
   let lastUrl = window.location.href;
   let initTimeout = null;
+  let isInitializing = false;
   
+  const cleanupAndReinit = () => {
+    if (isInitializing) return;
+    isInitializing = true;
+
+    // Clean up old panel (removes DOM + storage listener)
+    if (currentPanel) {
+      currentPanel.close();
+      currentPanel = null;
+      console.log('[BooruEagle] Closed old panel');
+    }
+
+    // Clean up old main page buttons (disconnects observer)
+    if (mainPageButtons) {
+      mainPageButtons.destroy();
+      mainPageButtons = null;
+      console.log('[BooruEagle] Destroyed old main page buttons');
+    }
+
+    // Clean up old queue panel (removes DOM element)
+    if (queuePanel) {
+      queuePanel.close();
+      queuePanel = null;
+      console.log('[BooruEagle] Closed old queue panel');
+    }
+
+    // Clean up micro-fixes
+    if (microFixes) {
+      microFixes.destroy();
+      microFixes = null;
+      console.log('[BooruEagle] Destroyed old micro-fixes');
+    }
+
+    // Reset state
+    currentParsedData = null;
+    currentParser = null;
+
+    // Clear parser caches (register data from previous page)
+    window._konachanRegisterData = undefined;
+    window._yandereRegisterData = undefined;
+
+    // Re-initialize
+    Promise.resolve(init()).finally(() => {
+      isInitializing = false;
+    });
+  };
+
+  const handleUrlChange = () => {
+    if (initTimeout) clearTimeout(initTimeout);
+
+    initTimeout = setTimeout(() => {
+      const newUrl = window.location.href;
+      if (newUrl !== lastUrl) {
+        console.log('[BooruEagle] URL changed:', lastUrl, '->', newUrl);
+        lastUrl = newUrl;
+        cleanupAndReinit();
+      }
+    }, TIMEOUTS.URL_CHANGE_DEBOUNCE);
+  };
+
   const observeUrlChanges = () => {
     window.addEventListener('popstate', handleUrlChange);
     window.addEventListener('hashchange', handleUrlChange);
     
+    // Modern Navigation API catches Main-World pushState/replaceState across isolated worlds
+    if (window.navigation && typeof window.navigation.addEventListener === 'function') {
+      window.navigation.addEventListener('navigate', () => {
+        handleUrlChange();
+      });
+    }
+
     const originalPushState = history.pushState;
     history.pushState = function(...args) {
       originalPushState.apply(this, args);
@@ -1309,62 +1470,36 @@
       originalReplaceState.apply(this, args);
       handleUrlChange();
     };
-  };
-  
-  const handleUrlChange = () => {
-    if (initTimeout) clearTimeout(initTimeout);
 
-    initTimeout = setTimeout(() => {
-      const newUrl = window.location.href;
-      if (newUrl !== lastUrl) {
-        console.log('[BooruEagle] URL changed:', lastUrl, '->', newUrl);
-        lastUrl = newUrl;
-
-        // Clean up old panel (removes DOM + storage listener)
-        if (currentPanel) {
-          currentPanel.close();
-          currentPanel = null;
-          console.log('[BooruEagle] Closed old panel');
-        }
-
-        // Clean up old main page buttons (disconnects observer)
-        if (mainPageButtons) {
-          mainPageButtons.destroy();
-          mainPageButtons = null;
-          console.log('[BooruEagle] Destroyed old main page buttons');
-        }
-
-        // Clean up old queue panel (removes DOM element)
-        if (queuePanel) {
-          queuePanel.close();
-          queuePanel = null;
-          console.log('[BooruEagle] Closed old queue panel');
-        }
-
-        // Clean up micro-fixes
-        if (microFixes) {
-          microFixes.destroy();
-          microFixes = null;
-          console.log('[BooruEagle] Destroyed old micro-fixes');
-        }
-
-        // Reset state
-        currentParsedData = null;
-        currentParser = null;
-
-        // Clear parser caches (register data from previous page)
-        window._konachanRegisterData = undefined;
-        window._yandereRegisterData = undefined;
-
-        // Clear stale save-progress from previous page
-        try {
-          chrome.storage.local.remove('save-progress');
-        } catch (e) {}
-
-        // Re-initialize
-        init();
+    // Fallback watcher for SPAs (like Sankaku) that navigate in Main World
+    // or replace document.body asynchronously after URL change (wiping out #booru-eagle-panel
+    // or restoring dead cached DOM snapshots on Back button)
+    setInterval(() => {
+      if (window.location.href !== lastUrl) {
+        handleUrlChange();
+        return;
       }
-    }, TIMEOUTS.URL_CHANGE_DEBOUNCE);
+      // Remove any phantom/cached panels restored by SPA history cache (e.g. Sankaku Back button)
+      if (currentPanel && currentPanel.panel) {
+        document.querySelectorAll('#booru-eagle-panel').forEach(el => {
+          if (el !== currentPanel.panel) {
+            el.remove();
+          }
+        });
+      }
+      if (queuePanel && queuePanel.panel) {
+        document.querySelectorAll('#booru-eagle-queue-panel').forEach(el => {
+          if (el !== queuePanel.panel) {
+            el.remove();
+          }
+        });
+      }
+      // If the site's SPA router replaced document.body and detached our panel from DOM
+      if (!isInitializing && currentPanel && currentPanel.panel && !currentPanel.panel.isConnected && document.body) {
+        console.log('[BooruEagle] Panel detached from DOM by SPA navigation, restoring...');
+        cleanupAndReinit();
+      }
+    }, 350);
   };
   
   observeUrlChanges();
