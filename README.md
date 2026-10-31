@@ -28,12 +28,9 @@ A Chromium browser extension that helps save images from Booru directly to Eagle
 - **Sankaku Complex** (chan.sankakucomplex fork)
 - **yande.re**
 
-<details>
-<summary><strong>Screenshots</strong></summary>
-
 <br>
 
-<h3 align="center">Already downloaded? Know before you save</h3>
+<h3 align="center">Screenshots</h3>
 
 <table align="center">
   <tr>
@@ -67,7 +64,6 @@ A Chromium browser extension that helps save images from Booru directly to Eagle
   </tr>
 </table>
 
-</details>
 
 ## Installation
 
