@@ -80,12 +80,6 @@ Make sure you have [Eagle](https://eagle.cool/) installed and running on your co
 5. Select the `extension` folder from this project
 6. The extension icon should appear in your browser toolbar
 
-### Step 3: Pin the Extension (Optional)
-
-1. Click the puzzle piece icon in the toolbar
-2. Find "Booru to Eagle Saver"
-3. Click the pin icon to keep it visible
-
 <details>
 <summary><strong>⚡Already have an Eagle library? Generate pHash Database (Optional)</strong></summary>
 
